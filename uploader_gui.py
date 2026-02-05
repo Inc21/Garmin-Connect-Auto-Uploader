@@ -25,10 +25,11 @@ from PIL import Image, ImageTk
 from pystray import Icon, Menu, MenuItem
 import webbrowser
 import shutil
+import winreg
 try:
-    import win32com.client
+    import keyring
 except ImportError:
-    win32com = None  # This module might not be available in all environments
+    keyring = None  # Falls back to config file storage if not available
 
 # Configuration file
 CONFIG_FILE = "uploader_config.json"
@@ -63,7 +64,7 @@ def find_resource(filename):
 LOGO_PATH = find_resource("garmin-uploader-logo.PNG")
 DEV_LOGO_PATH = find_resource("inc21.webp")
 GITHUB_LOGO_PATH = find_resource("github_logo.png")
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 LOG_FILE = os.path.join(LOG_DIR, "garmin_uploader.log")
 # Upload log (single file; month separators written when month changes)
 UPLOAD_LOG_FILE = os.path.join(LOG_DIR, "garmin_uploads.log")
@@ -123,41 +124,64 @@ def log_separator():
             handler.stream.write("\n")
             handler.flush()
 
-# Simple encryption key (better than plain text)
-# In production, consider using cryptography library
-ENCRYPTION_KEY = "GarminUploaderV1SecretKey2024"
+KEYRING_SERVICE = "GarminConnectUploader"
 
 
-def encrypt_password(password):
-    """Simple encryption using base64 and XOR"""
-    if not password:
+def store_password(email, password):
+    """Store password securely using Windows Credential Manager via keyring"""
+    if not password or not email:
+        return
+    if keyring:
+        try:
+            keyring.set_password(KEYRING_SERVICE, email, password)
+            return
+        except Exception:
+            pass
+    # Fallback: store in config (not ideal but functional)
+    logger.warning("keyring not available; password stored in config file")
+
+
+def retrieve_password(email):
+    """Retrieve password from Windows Credential Manager via keyring"""
+    if not email:
         return ""
-    # XOR with key
-    encrypted = ''.join(
-        chr(ord(c) ^ ord(ENCRYPTION_KEY[i % len(ENCRYPTION_KEY)]))
-        for i, c in enumerate(password)
-    )
-    # Base64 encode
-    return base64.b64encode(encrypted.encode('latin-1')).decode('utf-8')
+    if keyring:
+        try:
+            pw = keyring.get_password(KEYRING_SERVICE, email)
+            if pw:
+                return pw
+        except Exception:
+            pass
+    return ""
 
 
-def decrypt_password(encrypted_password):
-    """Decrypt password"""
+def delete_password(email):
+    """Remove stored password from keyring"""
+    if not email:
+        return
+    if keyring:
+        try:
+            keyring.delete_password(KEYRING_SERVICE, email)
+        except Exception:
+            pass
+
+
+def _legacy_decrypt_password(encrypted_password):
+    """Decrypt password from old XOR+Base64 format for migration only"""
     if not encrypted_password:
         return ""
     try:
-        # Base64 decode
+        key = "GarminUploaderV1SecretKey2024"
         decoded = base64.b64decode(
             encrypted_password.encode('utf-8')
         ).decode('latin-1')
-        # XOR with key to decrypt
         decrypted = ''.join(
-            chr(ord(c) ^ ord(ENCRYPTION_KEY[i % len(ENCRYPTION_KEY)]))
+            chr(ord(c) ^ ord(key[i % len(key)]))
             for i, c in enumerate(decoded)
         )
         return decrypted
     except Exception:  # noqa: E722
-        return ""  # Return empty if decryption fails
+        return ""
 
 
 class ConnectUploaderGUI:
@@ -691,9 +715,12 @@ You can select and copy text from this window!"""
         }
     
     def save_config(self):
+        email = self.garmin_email.get()
+        password = self.garmin_password.get()
+        # Store password in Windows Credential Manager
+        store_password(email, password)
         config = {
-            'garmin_email': self.garmin_email.get(),
-            'garmin_password': encrypt_password(self.garmin_password.get()),  # Encrypt password
+            'garmin_email': email,
             'wahoo_folder': self.wahoo_folder.get(),
             'mywhoosh_folder': self.mywhoosh_folder.get(),
             'start_with_windows': self.start_with_windows.get(),
@@ -701,7 +728,7 @@ You can select and copy text from this window!"""
         }
         with open(CONFIG_FILE, 'w') as f:
             json.dump(config, f, indent=2)
-        logger.info("Configuration saved (password encrypted)")
+        logger.info("Configuration saved (password stored in Windows Credential Manager)")
         return config
     
     def load_last_sync_from_log(self):
@@ -778,11 +805,23 @@ You can select and copy text from this window!"""
             log_info(f"Could not load last sync info from log: {str(e)}")
     
     def load_settings(self):
-        self.garmin_email.insert(0, self.config.get('garmin_email', ''))
-        # Decrypt password when loading
-        encrypted_password = self.config.get('garmin_password', '')
-        decrypted_password = decrypt_password(encrypted_password)
-        self.garmin_password.insert(0, decrypted_password)
+        email = self.config.get('garmin_email', '')
+        self.garmin_email.insert(0, email)
+        # Retrieve password from Windows Credential Manager
+        password = retrieve_password(email)
+        if not password:
+            # Migrate from old XOR+Base64 config format
+            legacy_pw = self.config.get('garmin_password', '')
+            if legacy_pw:
+                password = _legacy_decrypt_password(legacy_pw)
+                if password and email:
+                    store_password(email, password)
+                    # Remove legacy password from config
+                    self.config.pop('garmin_password', None)
+                    with open(CONFIG_FILE, 'w') as f:
+                        json.dump(self.config, f, indent=2)
+                    logger.info("Migrated password from config file to Windows Credential Manager")
+        self.garmin_password.insert(0, password)
         self.wahoo_folder.insert(0, self.config.get('wahoo_folder', ''))
         self.mywhoosh_folder.insert(0, self.config.get('mywhoosh_folder', ''))
         self.start_with_windows.set(self.config.get('start_with_windows', False))
@@ -863,84 +902,49 @@ You can select and copy text from this window!"""
             return os.path.abspath(sys.executable)
         return os.path.abspath(__file__)
 
-    def get_shortcut_target(self, shortcut_path):
-        """Get the target path of a Windows shortcut using COM objects"""
-        if win32com:
-            try:
-                shell = win32com.client.Dispatch("WScript.Shell")
-                shortcut = shell.CreateShortcut(shortcut_path)
-                return shortcut.TargetPath
-            except Exception:
-                pass
-        
-        # Fallback: try using PowerShell in a less obvious way
-        try:
-            import subprocess
-            ps_command = f'powershell -ExecutionPolicy Bypass -Command "(New-Object -ComObject WScript.Shell).CreateShortcut(\"{shortcut_path}\").TargetPath"'
-            result = subprocess.run(ps_command, capture_output=True, text=True, shell=True)
-            if result.returncode == 0:
-                return result.stdout.strip()
-        except Exception:
-            pass
-        return None
-    
-    def create_autostart_shortcut(self):
-        """Quietly create the auto-start shortcut without user interaction"""
-        startup_folder = os.path.join(os.getenv('APPDATA'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
-        shortcut_path = os.path.join(startup_folder, 'GarminUploader.lnk')
-        
+    _REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    _REG_VALUE = "GarminUploader"
+
+    def _set_registry_autostart(self):
+        """Add the current executable to HKCU\\...\\Run for Windows auto-start"""
         exe_path = self._get_current_executable()
-        
-        working_dir = os.path.dirname(exe_path)
-        
-        if win32com:
-            try:
-                # Create shortcut using COM objects instead of PowerShell to be more stealthy
-                shell = win32com.client.Dispatch("WScript.Shell")
-                shortcut = shell.CreateShortcut(shortcut_path)
-                shortcut.TargetPath = exe_path
-                shortcut.Arguments = "--minimized"
-                shortcut.WorkingDirectory = working_dir
-                shortcut.WindowStyle = 7  # Minimized window
-                shortcut.Description = "Garmin Connect Uploader"
-                shortcut.Save()
-                
-                logger.info(f"Auto-start shortcut created: {shortcut_path}")
-                return
-            except Exception as e:
-                logger.error(f"Failed to create shortcut using COM: {str(e)}")
-        
-        # Fallback to PowerShell if COM fails
+        value = f'"{exe_path}" --minimized'
         try:
-            import subprocess
-            ps_command = (
-                f'$WshShell = New-Object -ComObject WScript.Shell; '
-                f'$Shortcut = $WshShell.CreateShortcut("{shortcut_path}"); '
-                f'$Shortcut.TargetPath = "{exe_path}"; '
-                f'$Shortcut.Arguments = "--minimized"; '
-                f'$Shortcut.WorkingDirectory = "{working_dir}"; '
-                f'$Shortcut.WindowStyle = 7; '
-                f'$Shortcut.Description = "Garmin Connect Uploader"; '
-                f'$Shortcut.Save()'
-            )
-            result = subprocess.run(f'powershell -ExecutionPolicy Bypass -Command "{ps_command}"', 
-                                  shell=True, capture_output=True, text=True)
-            if result.returncode == 0:
-                logger.info(f"Auto-start shortcut created via PowerShell: {shortcut_path}")
-            else:
-                logger.error(f"PowerShell shortcut creation failed: {result.stderr}")
-        except Exception as ps_e:
-            logger.error(f"PowerShell method failed to create shortcut: {str(ps_e)}")
-    
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self._REG_KEY, 0, winreg.KEY_SET_VALUE) as key:
+                winreg.SetValueEx(key, self._REG_VALUE, 0, winreg.REG_SZ, value)
+            logger.info(f"Registry auto-start set: {value}")
+        except Exception as e:
+            logger.error(f"Failed to set registry auto-start: {e}")
+            raise
+
+    def _remove_registry_autostart(self):
+        """Remove the auto-start entry from the registry"""
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self._REG_KEY, 0, winreg.KEY_SET_VALUE) as key:
+                winreg.DeleteValue(key, self._REG_VALUE)
+            logger.info("Registry auto-start entry removed")
+        except FileNotFoundError:
+            pass  # Already absent
+        except Exception as e:
+            logger.error(f"Failed to remove registry auto-start: {e}")
+            raise
+
+    def _get_registry_autostart(self):
+        """Return the current auto-start command from the registry, or None"""
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self._REG_KEY, 0, winreg.KEY_READ) as key:
+                value, _ = winreg.QueryValueEx(key, self._REG_VALUE)
+                return value
+        except FileNotFoundError:
+            return None
+        except Exception:
+            return None
+
     def toggle_autostart(self):
-        """Toggle Windows startup using shortcut"""
-        startup_folder = os.path.join(os.getenv('APPDATA'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
-        shortcut_path = os.path.join(startup_folder, 'GarminUploader.lnk')
-        
+        """Toggle Windows startup using the registry"""
         if self.start_with_windows.get():
-            # Create startup shortcut
             try:
-                self.create_autostart_shortcut()
+                self._set_registry_autostart()
                 messagebox.showinfo("Auto-Start Enabled", "Garmin Uploader will now start automatically when Windows starts!\n\nIt will start minimized to system tray.")
                 self.update_status("Auto-start enabled", "green")
             except Exception as e:
@@ -948,92 +952,69 @@ You can select and copy text from this window!"""
                 messagebox.showerror("Error", f"Could not enable auto-start: {e}")
                 self.start_with_windows.set(False)
         else:
-            # Remove startup shortcut
             try:
-                if os.path.exists(shortcut_path):
-                    os.remove(shortcut_path)
-                    logger.info(f"Auto-start shortcut removed: {shortcut_path}")
-                    messagebox.showinfo("Auto-Start Disabled", "Garmin Uploader will no longer start automatically.")
+                self._remove_registry_autostart()
+                messagebox.showinfo("Auto-Start Disabled", "Garmin Uploader will no longer start automatically.")
                 self.update_status("Auto-start disabled", "blue")
             except Exception as e:
                 logger.error(f"Failed to disable auto-start: {str(e)}")
                 messagebox.showerror("Error", f"Could not disable auto-start: {e}")
-    
+
     def check_old_version_shortcut(self):
-        """Check for old version shortcuts and quietly update them if needed"""
+        """Migrate old Startup-folder shortcut to registry and update stale registry entries"""
         try:
+            # --- Phase 1: migrate legacy .lnk shortcut to registry ---
             startup_folder = os.path.join(os.getenv('APPDATA'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
             shortcut_path = os.path.join(startup_folder, 'GarminUploader.lnk')
-                
-            logger.info(f"Checking for auto-start shortcut at: {shortcut_path}")
-                
-            # Check if shortcut exists
-            if not os.path.exists(shortcut_path):
-                # Check if auto-start is enabled in settings
-                if hasattr(self, 'start_with_windows') and self.start_with_windows.get():
-                    logger.info("Auto-start is enabled but shortcut is missing - quietly recreating shortcut")
-                    # Quietly recreate the shortcut without user interaction
-                    self.create_autostart_shortcut()
-                else:
-                    logger.info("No autostart shortcut found and not enabled - skipping")
+
+            if os.path.exists(shortcut_path):
+                logger.info(f"Found legacy startup shortcut: {shortcut_path} - migrating to registry")
+                try:
+                    os.remove(shortcut_path)
+                    logger.info("Removed legacy startup shortcut")
+                except Exception as e:
+                    logger.warning(f"Could not remove legacy shortcut: {e}")
+                # Ensure registry entry exists
+                self._set_registry_autostart()
+                logger.info("Migrated auto-start from Startup folder shortcut to registry")
                 return
-                
-            # Read shortcut target using a stealthier approach to avoid Defender alerts
-            try:
-                # Get current exe path
-                # Check if running as compiled executable (works for both PyInstaller and Nuitka)
-                if getattr(sys, 'frozen', False) or '__compiled__' in globals():
-                    current_exe = self._get_current_executable()
-                    logger.info(f"Current executable: {current_exe}")
-                    logger.info(f"Running as compiled executable: {os.path.basename(current_exe)}")
+
+            # --- Phase 2: check registry entry points to current exe ---
+            current_reg = self._get_registry_autostart()
+            if not current_reg:
+                if hasattr(self, 'start_with_windows') and self.start_with_windows.get():
+                    logger.info("Auto-start enabled in settings but missing from registry - adding")
+                    self._set_registry_autostart()
                 else:
-                    # Running as script, skip check
-                    logger.info("Running as script - skipping version check")
-                    return
-                    
-                # Use a more stealthy approach to read the shortcut target
-                # Instead of using PowerShell directly, we'll use a direct COM approach
-                target_path = self.get_shortcut_target(shortcut_path)
-                
-                if not target_path:
-                    logger.warning("Could not read shortcut target path")
-                    return
-                    
-                logger.info(f"Shortcut target: {target_path}")
-                    
-                # Check if shortcut points to a different executable
-                if os.path.normpath(target_path) != os.path.normpath(current_exe):
-                    # Old version detected - ask user before replacing
-                    old_version = os.path.basename(target_path)
-                    current_version = os.path.basename(current_exe)
-                        
-                    logger.info(f"Version mismatch detected: {old_version} -> {current_version}")
-                    
-                    # Ask user whether to replace the shortcut
-                    replace = messagebox.askyesno(
-                        "Update Startup Shortcut",
-                        f"A startup shortcut points to the old version:\n\n"
-                        f"Current shortcut: {old_version}\n"
-                        f"New version: {current_version}\n\n"
-                        f"Do you want to update the shortcut to the new version?"
-                    )
-                    
-                    if replace:
-                        logger.info("User approved shortcut update; updating auto-start shortcut")
-                        os.remove(shortcut_path)
-                        logger.info(f"Removed old auto-start shortcut: {target_path}")
-                        self.create_autostart_shortcut()
-                        logger.info(f"Updated auto-start shortcut to: {current_exe}")
-                    else:
-                        logger.info("User declined shortcut update; leaving existing shortcut in place")
+                    logger.info("No auto-start entry found and not enabled - skipping")
+                return
+
+            if not (getattr(sys, 'frozen', False) or '__compiled__' in globals()):
+                logger.info("Running as script - skipping version check")
+                return
+
+            current_exe = self._get_current_executable()
+            expected_value = f'"{current_exe}" --minimized'
+
+            if os.path.normcase(current_reg) != os.path.normcase(expected_value):
+                logger.info(f"Registry auto-start mismatch: {current_reg} -> {expected_value}")
+                replace = messagebox.askyesno(
+                    "Update Startup Entry",
+                    f"The auto-start entry points to a different version.\n\n"
+                    f"Current: {current_reg}\n"
+                    f"New: {expected_value}\n\n"
+                    f"Update to the new version?"
+                )
+                if replace:
+                    self._set_registry_autostart()
+                    logger.info("User approved registry auto-start update")
                 else:
-                    logger.info("Shortcut already points to current version - no update needed")
-                        
-            except Exception as e:
-                logger.warning(f"Could not read shortcut details: {str(e)}")
-                    
+                    logger.info("User declined registry auto-start update")
+            else:
+                logger.info("Registry auto-start already points to current version")
+
         except Exception as e:
-            logger.warning(f"Error checking old version shortcut: {str(e)}")
+            logger.warning(f"Error checking auto-start: {str(e)}")
     
     def validate_settings(self):
         if not self.garmin_email.get() or not self.garmin_password.get():

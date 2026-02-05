@@ -7,11 +7,30 @@ All notable changes to Garmin Connect Uploader will be documented in this file.
 From **v1.0.1** onwards, the app includes a "Smart Migration" feature to handle older versions automatically. To update correctly:
 
 1. **Keep it in the family:** Place the new `.exe` in the same folder as your previous version. This ensures your settings (`uploader_config.json`) and logs are preserved.
-2. **Run the new version:** Once launched, the app will detect if you have an old "Start with Windows" shortcut pointing to the previous file.
-3. **One-Click Update:** A prompt will appear asking if you'd like to update the shortcut. Simply click **Yes** to ensure the new version is the one that launches at boot.
+2. **Run the new version:** Once launched, the app will detect if the auto-start registry entry points to a previous file.
+3. **One-Click Update:** A prompt will appear asking if you'd like to update the entry. Simply click **Yes** to ensure the new version is the one that launches at boot.
 
 > [!IMPORTANT]  
-> Your settings and logs are safe as long as the new EXE is in the same location as the old one. You can safely delete the old version's EXE file once the shortcut has been updated.
+> Your settings and logs are safe as long as the new EXE is in the same location as the old one. You can safely delete the old version's EXE file once the startup entry has been updated.
+>
+> **Upgrading from v1.0.2 or earlier:** The old Startup-folder shortcut (`GarminUploader.lnk`) and XOR-encrypted password in `uploader_config.json` are automatically migrated on first launch of v1.0.3. No manual steps required.
+
+## [1.0.3] - 2026-02-05
+
+### Changed (1.0.3)
+
+- **Windows auto-start now uses the registry** (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) instead of dropping a `.lnk` shortcut in the Startup folder. This is the standard, Defender-friendly approach and eliminates the need for `WScript.Shell` COM objects and PowerShell.
+- **Password storage moved to Windows Credential Manager** via the `keyring` library, replacing the old XOR + Base64 obfuscation in the config file. Passwords are no longer stored in `uploader_config.json`.
+- Removed dependency on `pywin32` / `win32com.client`; replaced with the built-in `winreg` module and the `keyring` package.
+
+### Fixed (1.0.3)
+
+- **Reduced Windows Defender false-positive triggers** by removing all PowerShell invocations (including `-ExecutionPolicy Bypass`), COM-based shortcut manipulation, and XOR + Base64 encoding patterns that match common malware heuristics.
+
+### Migration (1.0.3)
+
+- On first launch, any existing `GarminUploader.lnk` in the Startup folder is automatically deleted and replaced with a registry entry.
+- Existing XOR-encrypted passwords in `uploader_config.json` are automatically migrated to Windows Credential Manager and removed from the config file.
 
 ## [1.0.2] - 2026-01-01
 
