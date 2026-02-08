@@ -137,8 +137,27 @@ def store_password(email, password):
             return
         except Exception:
             pass
-    # Fallback: store in config (not ideal but functional)
-    logger.warning("keyring not available; password stored in config file")
+    logger.warning("keyring not available; password only in config file fallback")
+
+
+def _encode_fallback(password):
+    """Simple base64 encoding for config-file fallback (not a security measure)"""
+    if not password:
+        return ""
+    return "b64:" + base64.b64encode(password.encode('utf-8')).decode('utf-8')
+
+
+def _decode_fallback(encoded):
+    """Decode base64 config-file fallback password"""
+    if not encoded:
+        return ""
+    if encoded.startswith("b64:"):
+        try:
+            return base64.b64decode(encoded[4:].encode('utf-8')).decode('utf-8')
+        except Exception:
+            return ""
+    # Try legacy XOR+Base64 format
+    return _legacy_decrypt_password(encoded)
 
 
 def retrieve_password(email):
@@ -290,15 +309,17 @@ class ConnectUploaderGUI:
                     return True
                 except TypeError:
                     # session_dir not supported
+                    self.garmin_client = None
                     logger.warning("session_dir parameter not supported by garminconnect library")
                     return False
                 except Exception:
                     # Session failed, fall back to credentials
+                    self.garmin_client = None
                     logger.warning("Session login failed, will use credentials")
                     pass
         except Exception as e:
+            self.garmin_client = None
             logger.warning(f"Session login failed, will use credentials: {str(e)}")
-            # Session failed, fall back to credentials
             pass
             
         return False
@@ -717,10 +738,11 @@ You can select and copy text from this window!"""
     def save_config(self):
         email = self.garmin_email.get()
         password = self.garmin_password.get()
-        # Store password in Windows Credential Manager
+        # Store password in Windows Credential Manager (primary)
         store_password(email, password)
         config = {
             'garmin_email': email,
+            'garmin_password': _encode_fallback(password),  # fallback for early-boot
             'wahoo_folder': self.wahoo_folder.get(),
             'mywhoosh_folder': self.mywhoosh_folder.get(),
             'start_with_windows': self.start_with_windows.get(),
@@ -807,20 +829,20 @@ You can select and copy text from this window!"""
     def load_settings(self):
         email = self.config.get('garmin_email', '')
         self.garmin_email.insert(0, email)
-        # Retrieve password from Windows Credential Manager
+        # Retrieve password from Windows Credential Manager (retry once
+        # because Credential Manager may not be ready at early boot)
         password = retrieve_password(email)
+        if not password and email:
+            time.sleep(1)
+            password = retrieve_password(email)
         if not password:
-            # Migrate from old XOR+Base64 config format
-            legacy_pw = self.config.get('garmin_password', '')
-            if legacy_pw:
-                password = _legacy_decrypt_password(legacy_pw)
+            # Fall back to config file (handles both new b64: and legacy XOR formats)
+            fallback_pw = self.config.get('garmin_password', '')
+            if fallback_pw:
+                password = _decode_fallback(fallback_pw)
                 if password and email:
                     store_password(email, password)
-                    # Remove legacy password from config
-                    self.config.pop('garmin_password', None)
-                    with open(CONFIG_FILE, 'w') as f:
-                        json.dump(self.config, f, indent=2)
-                    logger.info("Migrated password from config file to Windows Credential Manager")
+                    logger.info("Loaded password from config fallback and stored in Credential Manager")
         self.garmin_password.insert(0, password)
         self.wahoo_folder.insert(0, self.config.get('wahoo_folder', ''))
         self.mywhoosh_folder.insert(0, self.config.get('mywhoosh_folder', ''))
@@ -1114,6 +1136,16 @@ You can select and copy text from this window!"""
             # First try to use saved session
             if not self.try_session_login():
                 # If session login failed, try credentials
+                if not self.login_garmin():
+                    self.sync_button.config(state='normal')
+                    return
+        else:
+            # Client exists but session may have expired; verify it
+            try:
+                self.garmin_client.get_user_profile()
+            except Exception:
+                logger.warning("Existing Garmin session expired, re-authenticating")
+                self.garmin_client = None
                 if not self.login_garmin():
                     self.sync_button.config(state='normal')
                     return

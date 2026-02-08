@@ -20,12 +20,14 @@ From **v1.0.1** onwards, the app includes a "Smart Migration" feature to handle 
 ### Changed (1.0.3)
 
 - **Windows auto-start now uses the registry** (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) instead of dropping a `.lnk` shortcut in the Startup folder. This is the standard, Defender-friendly approach and eliminates the need for `WScript.Shell` COM objects and PowerShell.
-- **Password storage moved to Windows Credential Manager** via the `keyring` library, replacing the old XOR + Base64 obfuscation in the config file. Passwords are no longer stored in `uploader_config.json`.
+- **Password storage moved to Windows Credential Manager** via the `keyring` library, replacing the old XOR + Base64 obfuscation. A simple base64 fallback is kept in `uploader_config.json` for early-boot resilience.
 - Removed dependency on `pywin32` / `win32com.client`; replaced with the built-in `winreg` module and the `keyring` package.
 
 ### Fixed (1.0.3)
 
 - **Reduced Windows Defender false-positive triggers** by removing all PowerShell invocations (including `-ExecutionPolicy Bypass`), COM-based shortcut manipulation, and XOR + Base64 encoding patterns that match common malware heuristics.
+- **Fixed "OAuth1 token is required" upload error** caused by stale Garmin sessions not being detected. The app now verifies the session before each sync and re-authenticates if expired. Failed session logins also properly reset the client so credential-based login can take over.
+- **Fixed settings not loading at Windows startup** when the app launches before Windows Credential Manager is fully available. A config-file fallback (simple base64) is now always kept alongside the keyring entry, with a retry mechanism for early-boot scenarios.
 
 ### Migration (1.0.3)
 
