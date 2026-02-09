@@ -25,14 +25,13 @@ from PIL import Image, ImageTk
 from pystray import Icon, Menu, MenuItem
 import webbrowser
 import shutil
-import winreg
 try:
     import keyring
 except ImportError:
     keyring = None  # Falls back to config file storage if not available
 
-# Configuration file
-CONFIG_FILE = "uploader_config.json"
+# Configuration file (resolved to absolute path after _get_base_and_log_dirs)
+_CONFIG_FILENAME = "uploader_config.json"
 
 # Compute stable base/log directories so compiled builds reuse the same log in the exe folder
 def _get_base_and_log_dirs():
@@ -48,6 +47,7 @@ def _get_base_and_log_dirs():
     return script_dir, script_dir
 
 BASE_DIR, LOG_DIR = _get_base_and_log_dirs()
+CONFIG_FILE = os.path.join(LOG_DIR, _CONFIG_FILENAME)
 
 def find_resource(filename):
     """Return first existing path for bundled/static assets."""
@@ -64,7 +64,7 @@ def find_resource(filename):
 LOGO_PATH = find_resource("garmin-uploader-logo.PNG")
 DEV_LOGO_PATH = find_resource("inc21.webp")
 GITHUB_LOGO_PATH = find_resource("github_logo.png")
-VERSION = "1.0.3"
+VERSION = "1.0.4"
 LOG_FILE = os.path.join(LOG_DIR, "garmin_uploader.log")
 # Upload log (single file; month separators written when month changes)
 UPLOAD_LOG_FILE = os.path.join(LOG_DIR, "garmin_uploads.log")
@@ -924,49 +924,118 @@ You can select and copy text from this window!"""
             return os.path.abspath(sys.executable)
         return os.path.abspath(__file__)
 
-    _REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-    _REG_VALUE = "GarminUploader"
+    _SHORTCUT_NAME = "GarminUploader.lnk"
 
-    def _set_registry_autostart(self):
-        """Add the current executable to HKCU\\...\\Run for Windows auto-start"""
-        exe_path = self._get_current_executable()
-        value = f'"{exe_path}" --minimized'
-        try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self._REG_KEY, 0, winreg.KEY_SET_VALUE) as key:
-                winreg.SetValueEx(key, self._REG_VALUE, 0, winreg.REG_SZ, value)
-            logger.info(f"Registry auto-start set: {value}")
-        except Exception as e:
-            logger.error(f"Failed to set registry auto-start: {e}")
-            raise
+    @staticmethod
+    def _get_startup_folder():
+        return os.path.join(os.getenv('APPDATA'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
 
-    def _remove_registry_autostart(self):
-        """Remove the auto-start entry from the registry"""
-        try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self._REG_KEY, 0, winreg.KEY_SET_VALUE) as key:
-                winreg.DeleteValue(key, self._REG_VALUE)
-            logger.info("Registry auto-start entry removed")
-        except FileNotFoundError:
-            pass  # Already absent
-        except Exception as e:
-            logger.error(f"Failed to remove registry auto-start: {e}")
-            raise
+    def _get_shortcut_path(self):
+        return os.path.join(self._get_startup_folder(), self._SHORTCUT_NAME)
 
-    def _get_registry_autostart(self):
-        """Return the current auto-start command from the registry, or None"""
+    @staticmethod
+    def _create_lnk(lnk_path, target_path, arguments="", working_dir="", description=""):
+        """Create a .lnk shortcut via a temporary VBScript executed by cscript.
+        No COM from Python, no PowerShell, no win32com."""
+        import subprocess
+        target_path = os.path.abspath(target_path)
+        if not working_dir:
+            working_dir = os.path.dirname(target_path)
+        vbs = (
+            'Set ws = CreateObject("WScript.Shell")\n'
+            f'Set sc = ws.CreateShortcut("{lnk_path}")\n'
+            f'sc.TargetPath = "{target_path}"\n'
+            f'sc.Arguments = "{arguments}"\n'
+            f'sc.WorkingDirectory = "{working_dir}"\n'
+            f'sc.Description = "{description}"\n'
+            'sc.WindowStyle = 7\n'
+            'sc.Save\n'
+        )
+        vbs_path = os.path.join(tempfile.gettempdir(), "_garmin_mklink.vbs")
         try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self._REG_KEY, 0, winreg.KEY_READ) as key:
-                value, _ = winreg.QueryValueEx(key, self._REG_VALUE)
-                return value
-        except FileNotFoundError:
+            with open(vbs_path, 'w') as f:
+                f.write(vbs)
+            result = subprocess.run(
+                ['cscript', '//Nologo', '//B', vbs_path],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"cscript failed: {result.stderr.strip()}")
+        finally:
+            try:
+                os.remove(vbs_path)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _read_lnk_target(lnk_path):
+        """Read the target path from a .lnk file via a temporary VBScript.
+        Returns the target path string or None on failure."""
+        import subprocess
+        vbs = (
+            'Set ws = CreateObject("WScript.Shell")\n'
+            f'Set sc = ws.CreateShortcut("{lnk_path}")\n'
+            'WScript.Echo sc.TargetPath\n'
+        )
+        vbs_path = os.path.join(tempfile.gettempdir(), "_garmin_rdlink.vbs")
+        try:
+            with open(vbs_path, 'w') as f:
+                f.write(vbs)
+            result = subprocess.run(
+                ['cscript', '//Nologo', vbs_path],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
             return None
         except Exception:
             return None
+        finally:
+            try:
+                os.remove(vbs_path)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _remove_registry_autostart_legacy():
+        """Remove any registry Run entry left by v1.0.3/v1.0.4 (one-time migration)"""
+        try:
+            import winreg
+            reg_key = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, reg_key, 0, winreg.KEY_SET_VALUE) as key:
+                winreg.DeleteValue(key, "GarminUploader")
+            logger.info("Removed legacy registry auto-start entry from v1.0.3/v1.0.4")
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logger.warning(f"Could not remove legacy registry entry: {e}")
+
+    def _create_autostart_shortcut(self):
+        """Create a .lnk shortcut in the Startup folder using pure Python"""
+        exe_path = self._get_current_executable()
+        working_dir = os.path.dirname(exe_path)
+        shortcut_path = self._get_shortcut_path()
+        os.makedirs(os.path.dirname(shortcut_path), exist_ok=True)
+        self._create_lnk(
+            shortcut_path, exe_path,
+            arguments="--minimized",
+            working_dir=working_dir,
+            description="Garmin Connect Uploader"
+        )
+        logger.info(f"Auto-start shortcut created: {shortcut_path}")
+
+    def _remove_autostart_shortcut(self):
+        """Remove the .lnk shortcut from the Startup folder"""
+        shortcut_path = self._get_shortcut_path()
+        if os.path.exists(shortcut_path):
+            os.remove(shortcut_path)
+            logger.info(f"Auto-start shortcut removed: {shortcut_path}")
 
     def toggle_autostart(self):
-        """Toggle Windows startup using the registry"""
+        """Toggle Windows startup using a Startup-folder shortcut"""
         if self.start_with_windows.get():
             try:
-                self._set_registry_autostart()
+                self._create_autostart_shortcut()
                 messagebox.showinfo("Auto-Start Enabled", "Garmin Uploader will now start automatically when Windows starts!\n\nIt will start minimized to system tray.")
                 self.update_status("Auto-start enabled", "green")
             except Exception as e:
@@ -975,7 +1044,7 @@ You can select and copy text from this window!"""
                 self.start_with_windows.set(False)
         else:
             try:
-                self._remove_registry_autostart()
+                self._remove_autostart_shortcut()
                 messagebox.showinfo("Auto-Start Disabled", "Garmin Uploader will no longer start automatically.")
                 self.update_status("Auto-start disabled", "blue")
             except Exception as e:
@@ -983,57 +1052,56 @@ You can select and copy text from this window!"""
                 messagebox.showerror("Error", f"Could not disable auto-start: {e}")
 
     def check_old_version_shortcut(self):
-        """Migrate old Startup-folder shortcut to registry and update stale registry entries"""
+        """Check startup shortcut version and clean up legacy registry entries"""
         try:
-            # --- Phase 1: migrate legacy .lnk shortcut to registry ---
-            startup_folder = os.path.join(os.getenv('APPDATA'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
-            shortcut_path = os.path.join(startup_folder, 'GarminUploader.lnk')
+            # --- Phase 0: remove any registry entry left by v1.0.3/v1.0.4 ---
+            self._remove_registry_autostart_legacy()
 
-            if os.path.exists(shortcut_path):
-                logger.info(f"Found legacy startup shortcut: {shortcut_path} - migrating to registry")
-                try:
-                    os.remove(shortcut_path)
-                    logger.info("Removed legacy startup shortcut")
-                except Exception as e:
-                    logger.warning(f"Could not remove legacy shortcut: {e}")
-                # Ensure registry entry exists
-                self._set_registry_autostart()
-                logger.info("Migrated auto-start from Startup folder shortcut to registry")
-                return
+            # --- Phase 1: check if shortcut exists ---
+            shortcut_path = self._get_shortcut_path()
+            logger.info(f"Checking for auto-start shortcut at: {shortcut_path}")
 
-            # --- Phase 2: check registry entry points to current exe ---
-            current_reg = self._get_registry_autostart()
-            if not current_reg:
+            if not os.path.exists(shortcut_path):
                 if hasattr(self, 'start_with_windows') and self.start_with_windows.get():
-                    logger.info("Auto-start enabled in settings but missing from registry - adding")
-                    self._set_registry_autostart()
+                    logger.info("Auto-start enabled but shortcut missing - recreating")
+                    self._create_autostart_shortcut()
                 else:
-                    logger.info("No auto-start entry found and not enabled - skipping")
+                    logger.info("No autostart shortcut found and not enabled - skipping")
                 return
 
+            # --- Phase 2: verify shortcut points to current exe ---
             if not (getattr(sys, 'frozen', False) or '__compiled__' in globals()):
                 logger.info("Running as script - skipping version check")
                 return
 
             current_exe = self._get_current_executable()
-            expected_value = f'"{current_exe}" --minimized'
+            target_path = self._read_lnk_target(shortcut_path)
 
-            if os.path.normcase(current_reg) != os.path.normcase(expected_value):
-                logger.info(f"Registry auto-start mismatch: {current_reg} -> {expected_value}")
+            if not target_path:
+                logger.warning("Could not read shortcut target path")
+                return
+
+            logger.info(f"Shortcut target: {target_path}")
+
+            if os.path.normcase(os.path.normpath(target_path)) != os.path.normcase(os.path.normpath(current_exe)):
+                old_version = os.path.basename(target_path)
+                current_version = os.path.basename(current_exe)
+                logger.info(f"Version mismatch: {old_version} -> {current_version}")
                 replace = messagebox.askyesno(
                     "Update Startup Entry",
-                    f"The auto-start entry points to a different version.\n\n"
-                    f"Current: {current_reg}\n"
-                    f"New: {expected_value}\n\n"
+                    f"The auto-start shortcut points to a different version.\n\n"
+                    f"Current: {old_version}\n"
+                    f"New: {current_version}\n\n"
                     f"Update to the new version?"
                 )
                 if replace:
-                    self._set_registry_autostart()
-                    logger.info("User approved registry auto-start update")
+                    os.remove(shortcut_path)
+                    self._create_autostart_shortcut()
+                    logger.info("User approved shortcut update")
                 else:
-                    logger.info("User declined registry auto-start update")
+                    logger.info("User declined shortcut update")
             else:
-                logger.info("Registry auto-start already points to current version")
+                logger.info("Shortcut already points to current version")
 
         except Exception as e:
             logger.warning(f"Error checking auto-start: {str(e)}")

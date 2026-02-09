@@ -7,13 +7,27 @@ All notable changes to Garmin Connect Uploader will be documented in this file.
 From **v1.0.1** onwards, the app includes a "Smart Migration" feature to handle older versions automatically. To update correctly:
 
 1. **Keep it in the family:** Place the new `.exe` in the same folder as your previous version. This ensures your settings (`uploader_config.json`) and logs are preserved.
-2. **Run the new version:** Once launched, the app will detect if the auto-start registry entry points to a previous file.
-3. **One-Click Update:** A prompt will appear asking if you'd like to update the entry. Simply click **Yes** to ensure the new version is the one that launches at boot.
+2. **Run the new version:** Once launched, the app will detect if the auto-start shortcut points to a previous file.
+3. **One-Click Update:** A prompt will appear asking if you'd like to update the shortcut. Simply click **Yes** to ensure the new version is the one that launches at boot.
 
 > [!IMPORTANT]  
 > Your settings and logs are safe as long as the new EXE is in the same location as the old one. You can safely delete the old version's EXE file once the startup entry has been updated.
 >
 > **Upgrading from v1.0.2 or earlier:** The old Startup-folder shortcut (`GarminUploader.lnk`) and XOR-encrypted password in `uploader_config.json` are automatically migrated on first launch of v1.0.3. No manual steps required.
+
+## [1.0.4] - 2026-02-09
+
+### Changed (1.0.4)
+
+- **Reverted auto-start from registry back to Startup-folder shortcuts**, using a lightweight temporary VBScript executed by `cscript.exe` to create the `.lnk` file. The Python exe itself never calls COM or PowerShell directly. The registry `HKCU\...\Run` approach introduced in v1.0.3 triggered `Wacapew.A!ml` detections in Windows Defender.
+- Any leftover registry `Run` entry from v1.0.3 is automatically cleaned up on first launch.
+
+### Fixed (1.0.4)
+
+- **Fixed Windows Defender `Wacapew.A!ml` false positive** by removing all `winreg` registry writes. The exe no longer modifies `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+- **Fixed settings/config not loading at Windows startup.** The config file path was relative, so when Windows launched the app at boot (working directory `C:\Windows\System32`) it couldn't find `uploader_config.json`. The path is now resolved to an absolute path based on the exe's directory.
+- **Fixed "OAuth1 token is required" upload error** caused by stale Garmin sessions not being detected. The app now verifies the session before each sync and re-authenticates if expired. Failed session logins also properly reset the client so credential-based login can take over.
+- **Improved early-boot password retrieval.** Added a retry with short delay for Windows Credential Manager reads, plus a safe base64 config-file fallback so credentials are always available even if keyring isn't ready yet.
 
 ## [1.0.3] - 2026-02-05
 
@@ -26,8 +40,6 @@ From **v1.0.1** onwards, the app includes a "Smart Migration" feature to handle 
 ### Fixed (1.0.3)
 
 - **Reduced Windows Defender false-positive triggers** by removing all PowerShell invocations (including `-ExecutionPolicy Bypass`), COM-based shortcut manipulation, and XOR + Base64 encoding patterns that match common malware heuristics.
-- **Fixed "OAuth1 token is required" upload error** caused by stale Garmin sessions not being detected. The app now verifies the session before each sync and re-authenticates if expired. Failed session logins also properly reset the client so credential-based login can take over.
-- **Fixed settings not loading at Windows startup** when the app launches before Windows Credential Manager is fully available. A config-file fallback (simple base64) is now always kept alongside the keyring entry, with a retry mechanism for early-boot scenarios.
 
 ### Migration (1.0.3)
 
