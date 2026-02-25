@@ -61,10 +61,13 @@ def find_resource(filename):
             return path
     return os.path.join(BASE_DIR, filename)
 
-LOGO_PATH = find_resource("garmin-uploader-logo.PNG")
-DEV_LOGO_PATH = find_resource("inc21.webp")
-GITHUB_LOGO_PATH = find_resource("github_logo.png")
-VERSION = "1.0.4"
+LOGO_PATH = find_resource(os.path.join("assets", "garmin-uploader-logo.PNG"))
+DEV_LOGO_PATH = find_resource(os.path.join("assets", "inc21.webp"))
+GITHUB_LOGO_PATH = find_resource(os.path.join("assets", "github_logo.png"))
+WAHOO_LOGO_PATH = find_resource(os.path.join("assets", "wahoo.png"))
+MYWHOOSH_LOGO_PATH = find_resource(os.path.join("assets", "mywhoosh.png"))
+TRAINERDAY_LOGO_PATH = find_resource(os.path.join("assets", "trainerday.png"))
+VERSION = "1.0.5"
 LOG_FILE = os.path.join(LOG_DIR, "garmin_uploader.log")
 # Upload log (single file; month separators written when month changes)
 UPLOAD_LOG_FILE = os.path.join(LOG_DIR, "garmin_uploads.log")
@@ -226,7 +229,9 @@ class ConnectUploaderGUI:
         self.root.minsize(width, min_height)
         self.root.resizable(True, True)
         
-        # Store for later use
+        # Store base and max dimensions for later use
+        self._base_width = width
+        self._min_height = min_height
         self._max_height = max_height
         
         # Set modern styling
@@ -331,6 +336,8 @@ class ConnectUploaderGUI:
         
         # Main container inside canvas
         main_frame = ttk.Frame(canvas, padding="20")
+        self._canvas = canvas
+        self._main_frame = main_frame
         
         # Configure grid weights for responsive layout
         main_frame.columnconfigure(1, weight=1)  # Column 1 (entry fields) expands
@@ -447,61 +454,192 @@ class ConnectUploaderGUI:
         
         # Folder Settings
         ttk.Label(main_frame, text="📁 Folder Settings", style='Header.TLabel').grid(row=4, column=0, columnspan=3, sticky=tk.W, pady=(20, 5))
-        
-        # Wahoo Folder
-        ttk.Label(main_frame, text="Wahoo Folder (Dropbox):").grid(row=5, column=0, columnspan=3, sticky=tk.W, pady=(5, 2))
-        wahoo_row = ttk.Frame(main_frame)
-        wahoo_row.grid(row=6, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 2))
-        self.wahoo_folder = ttk.Entry(wahoo_row)
-        self.wahoo_folder.pack(side='left', fill='x', expand=True, padx=(0, 5))
-        ttk.Button(wahoo_row, text="Browse", command=lambda: self.browse_folder(self.wahoo_folder)).pack(side='left', padx=(0, 3))
-        help_btn = ttk.Button(wahoo_row, text="?", command=self.show_wahoo_help, width=2)
-        help_btn.pack(side='left')
-        
-        ttk.Label(main_frame, text="Example: C:\\Users\\YourName\\Dropbox\\Apps\\WahooFitness", font=('Arial', 8), foreground='gray').grid(row=7, column=0, columnspan=3, sticky=tk.W)
-        
-        # MyWhoosh Folder
-        ttk.Label(main_frame, text="MyWhoosh Folder:").grid(row=8, column=0, columnspan=3, sticky=tk.W, pady=(10, 2))
-        mywhoosh_row = ttk.Frame(main_frame)
-        mywhoosh_row.grid(row=9, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 2))
-        self.mywhoosh_folder = ttk.Entry(mywhoosh_row)
-        self.mywhoosh_folder.pack(side='left', fill='x', expand=True, padx=(0, 5))
-        ttk.Button(mywhoosh_row, text="Browse", command=lambda: self.browse_folder(self.mywhoosh_folder)).pack(side='left', padx=(0, 3))
-        help_btn2 = ttk.Button(mywhoosh_row, text="?", command=self.show_mywhoosh_help, width=2)
-        help_btn2.pack(side='left')
-        
-        ttk.Label(main_frame, text="Example: C:\\Users\\YourName\\AppData\\Local\\...\\MyWhoosh\\Content\\Data", font=('Arial', 8), foreground='gray').grid(row=10, column=0, columnspan=3, sticky=tk.W)
-        
-        # MyWhoosh warning
-        warning_frame = ttk.Frame(main_frame)
-        warning_frame.grid(row=11, column=0, columnspan=3, sticky=tk.W, pady=(10, 0))
-        
-        # Warning icon (spans 2 rows)
+
+        # Per-app expanded state for collapsible sections (default collapsed)
+        self.wahoo_expanded = tk.BooleanVar(value=False)
+        self.mywhoosh_expanded = tk.BooleanVar(value=False)
+        self.trainerday_expanded = tk.BooleanVar(value=False)
+
+        # Wahoo section (checkbox header + collapsible body)
+        self.wahoo_section = ttk.Frame(main_frame)
+        self.wahoo_section.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E))
+
+        wahoo_header = ttk.Frame(self.wahoo_section)
+        wahoo_header.pack(fill='x', pady=(2, 0))
+        wahoo_header.bind("<Button-1>", lambda e: self._on_header_click("wahoo", e))
+        self.wahoo_toggle = ttk.Label(wahoo_header, text="▶", width=2)
+        self.wahoo_toggle.pack(side='left')
+        self.wahoo_toggle.bind("<Button-1>", lambda e: self._on_header_click("wahoo", e))
+
+        try:
+            wahoo_img = Image.open(WAHOO_LOGO_PATH)
+            wahoo_img.thumbnail((28, 28))
+            self.wahoo_logo_image = ImageTk.PhotoImage(wahoo_img)
+            wahoo_logo_label = ttk.Label(wahoo_header, image=self.wahoo_logo_image)
+            wahoo_logo_label.pack(side='left', padx=(2, 4))
+            wahoo_logo_label.bind("<Button-1>", lambda e: self._on_header_click("wahoo", e))
+        except Exception:
+            self.wahoo_logo_image = None
+
+        # App name label (no checkbox; status-only header)
+        wahoo_name_label = ttk.Label(wahoo_header, text="Wahoo (Dropbox)")
+        wahoo_name_label.pack(side='left')
+        wahoo_name_label.bind("<Button-1>", lambda e: self._on_header_click("wahoo", e))
+
+        # Status label on the right (e.g. Not configured / Folder missing / ✅ Ready)
+        self.wahoo_status_label = ttk.Label(wahoo_header, text="", foreground='gray')
+        self.wahoo_status_label.pack(side='right')
+        self.wahoo_status_label.bind("<Button-1>", lambda e: self._on_header_click("wahoo", e))
+
+        self.wahoo_body = ttk.Frame(self.wahoo_section)
+        self.wahoo_body.pack(fill='x', padx=(24, 0), pady=(0, 4))
+        self.wahoo_body.columnconfigure(0, weight=1)
+
+        self.wahoo_folder = ttk.Entry(self.wahoo_body)
+        self.wahoo_folder.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 5), pady=(0, 2))
+        self.wahoo_folder.bind('<KeyRelease>', lambda e: (self.mark_settings_changed(), self._update_app_status_icons()))
+        ttk.Button(self.wahoo_body, text="Browse", command=lambda: self.browse_folder(self.wahoo_folder)).grid(row=0, column=1, padx=(0, 3), pady=(0, 2))
+        help_btn = ttk.Button(self.wahoo_body, text="?", command=self.show_wahoo_help, width=2)
+        help_btn.grid(row=0, column=2, pady=(0, 2))
+
+        ttk.Label(
+            self.wahoo_body,
+            text="Example: C\\Users\\YourName\\Dropbox\\Apps\\WahooFitness",
+            font=('Arial', 8),
+            foreground='gray',
+        ).grid(row=1, column=0, columnspan=3, sticky=tk.W)
+
+        # MyWhoosh section
+        self.mywhoosh_section = ttk.Frame(main_frame)
+        self.mywhoosh_section.grid(row=6, column=0, columnspan=3, sticky=(tk.W, tk.E))
+
+        mywhoosh_header = ttk.Frame(self.mywhoosh_section)
+        mywhoosh_header.pack(fill='x', pady=(8, 0))
+        mywhoosh_header.bind("<Button-1>", lambda e: self._on_header_click("mywhoosh", e))
+        self.mywhoosh_toggle = ttk.Label(mywhoosh_header, text="▶", width=2)
+        self.mywhoosh_toggle.pack(side='left')
+        self.mywhoosh_toggle.bind("<Button-1>", lambda e: self._on_header_click("mywhoosh", e))
+
+        try:
+            mywhoosh_img = Image.open(MYWHOOSH_LOGO_PATH)
+            mywhoosh_img.thumbnail((28, 28))
+            self.mywhoosh_logo_image = ImageTk.PhotoImage(mywhoosh_img)
+            mywhoosh_logo_label = ttk.Label(mywhoosh_header, image=self.mywhoosh_logo_image)
+            mywhoosh_logo_label.pack(side='left', padx=(2, 4))
+            mywhoosh_logo_label.bind("<Button-1>", lambda e: self._on_header_click("mywhoosh", e))
+        except Exception:
+            self.mywhoosh_logo_image = None
+
+        mywhoosh_name_label = ttk.Label(mywhoosh_header, text="MyWhoosh")
+        mywhoosh_name_label.pack(side='left')
+        mywhoosh_name_label.bind("<Button-1>", lambda e: self._on_header_click("mywhoosh", e))
+
+        self.mywhoosh_status_label = ttk.Label(mywhoosh_header, text="", foreground='gray')
+        self.mywhoosh_status_label.pack(side='right')
+        self.mywhoosh_status_label.bind("<Button-1>", lambda e: self._on_header_click("mywhoosh", e))
+
+        self.mywhoosh_body = ttk.Frame(self.mywhoosh_section)
+        self.mywhoosh_body.pack(fill='x', padx=(24, 0), pady=(0, 4))
+        self.mywhoosh_body.columnconfigure(0, weight=1)
+
+        self.mywhoosh_folder = ttk.Entry(self.mywhoosh_body)
+        self.mywhoosh_folder.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 5), pady=(0, 2))
+        self.mywhoosh_folder.bind('<KeyRelease>', lambda e: (self.mark_settings_changed(), self._update_app_status_icons()))
+        ttk.Button(self.mywhoosh_body, text="Browse", command=lambda: self.browse_folder(self.mywhoosh_folder)).grid(row=0, column=1, padx=(0, 3), pady=(0, 2))
+        help_btn2 = ttk.Button(self.mywhoosh_body, text="?", command=self.show_mywhoosh_help, width=2)
+        help_btn2.grid(row=0, column=2, pady=(0, 2))
+
+        ttk.Label(
+            self.mywhoosh_body,
+            text="Example: C\\Users\\YourName\\AppData\\Local\\...\\MyWhoosh\\Content\\Data",
+            font=('Arial', 8),
+            foreground='gray',
+        ).grid(row=1, column=0, columnspan=3, sticky=tk.W)
+
+        # MyWhoosh warning and link inside the body
+        warning_frame = ttk.Frame(self.mywhoosh_body)
+        warning_frame.grid(row=2, column=0, columnspan=3, sticky=tk.W, pady=(8, 0))
+
         icon_label = ttk.Label(warning_frame, text="⚠️", font=('Arial', 20), foreground='#ff6600')
         icon_label.grid(row=0, column=0, rowspan=2, sticky='n', padx=(0, 10))
-        
-        # First line of warning text
+
         ttk.Label(
             warning_frame,
             text="MyWhoosh only keeps the latest activity in the cache folder.",
             font=('Arial', 9),
-            foreground='#ff6600'
+            foreground='#ff6600',
         ).grid(row=0, column=1, sticky='w')
-        
-        # Second line of warning text
+
         ttk.Label(
             warning_frame,
             text="Multiple rides while app is closed = only the last one syncs!",
             font=('Arial', 9),
-            foreground='#ff6600'
+            foreground='#ff6600',
         ).grid(row=1, column=1, sticky='w')
-        
-        # Read more link on its own centered line
-        link_frame = ttk.Frame(main_frame)
-        link_frame.grid(row=12, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(5, 0))
-        readme_link = ttk.Label(link_frame, text="Read more on GitHub", foreground='blue', cursor='hand2', font=('Arial', 9, 'underline'))
+
+        link_frame = ttk.Frame(self.mywhoosh_body)
+        link_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(5, 0))
+        readme_link = ttk.Label(
+            link_frame,
+            text="Read more on GitHub",
+            foreground='blue',
+            cursor='hand2',
+            font=('Arial', 9, 'underline'),
+        )
         readme_link.pack(anchor='center')
-        readme_link.bind("<Button-1>", lambda e: webbrowser.open("https://github.com/Inc21/Wahoo-and-MyWhoosh-to-Garmin-Conect-Auto-Uploader#%EF%B8%8F-important-sync-behavior"))
+        readme_link.bind(
+            "<Button-1>",
+            lambda e: webbrowser.open(
+                "https://github.com/Inc21/Wahoo-and-MyWhoosh-to-Garmin-Conect-Auto-Uploader#%EF%B8%8F-important-sync-behavior"
+            ),
+        )
+
+        # TrainerDay section (similar structure to Wahoo)
+        self.trainerday_section = ttk.Frame(main_frame)
+        self.trainerday_section.grid(row=7, column=0, columnspan=3, sticky=(tk.W, tk.E))
+
+        trainerday_header = ttk.Frame(self.trainerday_section)
+        trainerday_header.pack(fill='x', pady=(8, 0))
+        trainerday_header.bind("<Button-1>", lambda e: self._on_header_click("trainerday", e))
+        self.trainerday_toggle = ttk.Label(trainerday_header, text="▶", width=2)
+        self.trainerday_toggle.pack(side='left')
+        self.trainerday_toggle.bind("<Button-1>", lambda e: self._on_header_click("trainerday", e))
+
+        try:
+            trainerday_img = Image.open(TRAINERDAY_LOGO_PATH)
+            trainerday_img.thumbnail((28, 28))
+            self.trainerday_logo_image = ImageTk.PhotoImage(trainerday_img)
+            trainerday_logo_label = ttk.Label(trainerday_header, image=self.trainerday_logo_image)
+            trainerday_logo_label.pack(side='left', padx=(2, 4))
+            trainerday_logo_label.bind("<Button-1>", lambda e: self._on_header_click("trainerday", e))
+        except Exception:
+            self.trainerday_logo_image = None
+
+        trainerday_name_label = ttk.Label(trainerday_header, text="TrainerDay (Dropbox)")
+        trainerday_name_label.pack(side='left')
+        trainerday_name_label.bind("<Button-1>", lambda e: self._on_header_click("trainerday", e))
+
+        self.trainerday_status_label = ttk.Label(trainerday_header, text="", foreground='gray')
+        self.trainerday_status_label.pack(side='right')
+        self.trainerday_status_label.bind("<Button-1>", lambda e: self._on_header_click("trainerday", e))
+
+        self.trainerday_body = ttk.Frame(self.trainerday_section)
+        self.trainerday_body.pack(fill='x', padx=(24, 0), pady=(0, 4))
+        self.trainerday_body.columnconfigure(0, weight=1)
+
+        self.trainerday_folder = ttk.Entry(self.trainerday_body)
+        self.trainerday_folder.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 5), pady=(0, 2))
+        self.trainerday_folder.bind('<KeyRelease>', lambda e: (self.mark_settings_changed(), self._update_app_status_icons()))
+        ttk.Button(self.trainerday_body, text="Browse", command=lambda: self.browse_folder(self.trainerday_folder)).grid(row=0, column=1, padx=(0, 3), pady=(0, 2))
+        help_btn3 = ttk.Button(self.trainerday_body, text="?", command=self.show_trainerday_help, width=2)
+        help_btn3.grid(row=0, column=2, pady=(0, 2))
+
+        ttk.Label(
+            self.trainerday_body,
+            text="Example: C\\Users\\YourName\\Dropbox\\Apps\\TrainerDay",
+            font=('Arial', 8),
+            foreground='gray',
+        ).grid(row=1, column=0, columnspan=3, sticky=tk.W)
         
         # Separator
         ttk.Separator(main_frame, orient='horizontal').grid(row=13, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=15)
@@ -570,30 +708,156 @@ class ConnectUploaderGUI:
         log_link.bind("<Button-1>", lambda e: self.open_log_file())
         
         # Auto-size window to content after UI is built
-        self.root.update_idletasks()  # Force layout calculation
-        required_height = main_frame.winfo_reqheight() + 40  # Add padding
+        self._auto_size_to_content()
         
-        # Use required height but cap at max_height to prevent too-tall windows
-        actual_height = min(required_height, self._max_height)
-        
-        # Get current geometry width
-        current_width = self.root.winfo_width()
-        self.root.geometry(f"{current_width}x{actual_height}")
-        
-        # Preserve scroll position after window resize to prevent jumping to top
-        try:
-            # Get current scroll position before resize
-            current_pos = canvas.yview()
-            # Only scroll to top if it was already at the top
-            if current_pos and current_pos[0] == 0.0:
-                canvas.yview_moveto(0)
+    def update_app_sections(self):
+        """Show/hide app folder sections based on expanded state only.
+
+        Default is headers only (collapsed). When an app is expanded, its body is
+        shown and the arrow icon points down; otherwise the body is hidden and
+        the arrow points right.
+        """
+        # Wahoo
+        if getattr(self, 'wahoo_expanded', None):
+            if self.wahoo_expanded.get():
+                self.wahoo_body.pack(fill='x', padx=(24, 0), pady=(0, 4))
+                self.wahoo_toggle.config(text="▼")
             else:
-                # Restore current scroll position
-                canvas.yview_moveto(current_pos[0] if current_pos else 0)
-        except:
-            # If canvas is not ready, default to top
-            canvas.yview_moveto(0)  # Canvas might not be ready yet
-        
+                self.wahoo_body.pack_forget()
+                self.wahoo_toggle.config(text="▶")
+
+        # MyWhoosh
+        if getattr(self, 'mywhoosh_expanded', None):
+            if self.mywhoosh_expanded.get():
+                self.mywhoosh_body.pack(fill='x', padx=(24, 0), pady=(0, 4))
+                self.mywhoosh_toggle.config(text="▼")
+            else:
+                self.mywhoosh_body.pack_forget()
+                self.mywhoosh_toggle.config(text="▶")
+
+        # TrainerDay
+        if getattr(self, 'trainerday_expanded', None):
+            if self.trainerday_expanded.get():
+                self.trainerday_body.pack(fill='x', padx=(24, 0), pady=(0, 4))
+                self.trainerday_toggle.config(text="▼")
+            else:
+                self.trainerday_body.pack_forget()
+                self.trainerday_toggle.config(text="▶")
+
+        self._update_app_status_icons()
+        # Adjust window height when sections are expanded/collapsed
+        self._auto_size_to_content()
+
+    def _auto_size_to_content(self):
+        """Auto-size the main window height to fit current content.
+
+        Uses the requested height of the main frame, capped at _max_height,
+        and preserves scroll position. This keeps the window from leaving
+        a large empty area when sections are collapsed.
+        """
+        try:
+            if not hasattr(self, "_main_frame") or not hasattr(self, "_canvas"):
+                return
+
+            canvas = self._canvas
+            main_frame = self._main_frame
+
+            # Force layout calculation
+            self.root.update_idletasks()
+
+            required_height = main_frame.winfo_reqheight() + 40  # Add padding
+            actual_height = min(required_height, self._max_height)
+
+            # Get current geometry width/height
+            current_width = self.root.winfo_width()
+
+            # Capture scroll position before resize
+            try:
+                current_pos = canvas.yview()
+            except Exception:
+                current_pos = None
+
+            # Apply new geometry and allow window to shrink to this height,
+            # while keeping the base minimum width
+            self.root.geometry(f"{current_width}x{actual_height}")
+            self.root.minsize(getattr(self, "_base_width", current_width), actual_height)
+
+            # Restore scroll position
+            try:
+                if current_pos:
+                    if current_pos[0] == 0.0:
+                        canvas.yview_moveto(0)
+                    else:
+                        canvas.yview_moveto(current_pos[0])
+            except Exception:
+                pass
+        except Exception:
+            # Never let sizing errors break the UI
+            pass
+
+    def toggle_app_section(self, app_name):
+        """Toggle expanded/collapsed state for a given app section.
+
+        Clicking the arrow/header will expand/collapse. There is no separate
+        enable/disable state for apps; readiness is derived from the folder
+        configuration. This method only controls visibility of the details.
+        """
+        if app_name == "wahoo":
+            self.wahoo_expanded.set(not self.wahoo_expanded.get())
+        elif app_name == "mywhoosh":
+            self.mywhoosh_expanded.set(not self.mywhoosh_expanded.get())
+        elif app_name == "trainerday":
+            self.trainerday_expanded.set(not self.trainerday_expanded.get())
+
+        self.update_app_sections()
+        self.mark_settings_changed()
+
+    def _on_header_click(self, app_name, event=None):
+        """Handle clicks on app header areas (arrow, logo, status, background).
+
+        This toggles expand/collapse for that app's section.
+        """
+        self.toggle_app_section(app_name)
+
+    def _update_app_status_icons(self):
+        """Update header status text/icons based on folder configuration.
+
+        States per app:
+        - No folder text          -> "Not configured" (gray)
+        - Text but folder missing -> "Folder missing" (orange)
+        - Existing directory      -> "✅ Ready" (green)
+        """
+        try:
+            # Wahoo
+            wahoo = self.wahoo_folder.get().strip()
+            if not wahoo:
+                self.wahoo_status_label.config(text="Not configured", foreground='gray')
+            elif not os.path.isdir(wahoo):
+                self.wahoo_status_label.config(text="Folder missing", foreground='orange')
+            else:
+                self.wahoo_status_label.config(text="✅ Ready", foreground='green')
+
+            # MyWhoosh
+            mywhoosh = self.mywhoosh_folder.get().strip()
+            if not mywhoosh:
+                self.mywhoosh_status_label.config(text="Not configured", foreground='gray')
+            elif not os.path.isdir(mywhoosh):
+                self.mywhoosh_status_label.config(text="Folder missing", foreground='orange')
+            else:
+                self.mywhoosh_status_label.config(text="✅ Ready", foreground='green')
+
+            # TrainerDay
+            trainerday = self.trainerday_folder.get().strip() if hasattr(self, 'trainerday_folder') else ""
+            if not trainerday:
+                self.trainerday_status_label.config(text="Not configured", foreground='gray')
+            elif not os.path.isdir(trainerday):
+                self.trainerday_status_label.config(text="Folder missing", foreground='orange')
+            else:
+                self.trainerday_status_label.config(text="✅ Ready", foreground='green')
+        except Exception:
+            # UI-only helper; never raise
+            pass
+
     def show_wahoo_help(self):
         # Create a new window with selectable text
         help_window = tk.Toplevel(self.root)
@@ -654,6 +918,53 @@ You can select and copy text from this window!"""
         close_btn = ttk.Button(help_window, text="Close", command=help_window.destroy)
         close_btn.pack(pady=10)
     
+    def show_trainerday_help(self):
+        """Show instructions for configuring the TrainerDay Dropbox folder."""
+        help_window = tk.Toplevel(self.root)
+        help_window.title("TrainerDay Dropbox Folder Instructions")
+
+        # Apply DPI scaling
+        base_width, base_height = 550, 420
+        width = int(base_width * (self.scaling / 1.33))
+        height = int(base_height * (self.scaling / 1.33))
+        help_window.geometry(f"{width}x{height}")
+        help_window.resizable(False, False)
+
+        # Title
+        title_label = ttk.Label(help_window, text="How to Setup TrainerDay with Dropbox", font=('Arial', 12, 'bold'))
+        title_label.pack(pady=10)
+
+        # Scrollable text area
+        text_area = scrolledtext.ScrolledText(help_window, wrap=tk.WORD, width=65, height=16, font=('Arial', 9))
+        text_area.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+
+        help_text = """TrainerDay can export your workouts to a Dropbox folder.
+
+1. In your browser, open https://app.trainerday.com and log in.
+
+2. Click your user icon in the top-right corner and choose "Connections".
+
+3. In the "Connection to Dropbox" section, click "Connect" (or "Sync activities") to link TrainerDay to Dropbox.
+
+4. After the first sync, Dropbox will contain a TrainerDay folder, for example:
+
+   C:\\Users\\YourName\\Dropbox\\TrainerDay
+   or
+   C:\\Users\\YourName\\Dropbox\\Apps\\TrainerDay
+
+5. On this PC, open File Explorer and navigate to that TrainerDay folder.
+
+6. Copy the full path and paste it into the TrainerDay Folder field in this app.
+
+Note: This app will automatically create an 'uploaded' subfolder inside the TrainerDay folder to move processed .fit files after they are uploaded."""
+
+        text_area.insert(1.0, help_text)
+        text_area.config(state='normal')  # Keep it editable so users can select/copy
+
+        # Close button
+        close_btn = ttk.Button(help_window, text="Close", command=help_window.destroy)
+        close_btn.pack(pady=10)
+
     def show_mywhoosh_help(self):
         # Create a new window with selectable text
         help_window = tk.Toplevel(self.root)
@@ -718,6 +1029,8 @@ You can select and copy text from this window!"""
         if folder:
             entry_widget.delete(0, tk.END)
             entry_widget.insert(0, folder)
+            self.mark_settings_changed()
+            self._update_app_status_icons()
     
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -731,6 +1044,7 @@ You can select and copy text from this window!"""
             'garmin_password': '',
             'wahoo_folder': '',
             'mywhoosh_folder': '',
+            'trainerday_folder': '',
             'start_with_windows': False,
             'check_interval': 5
         }
@@ -745,6 +1059,7 @@ You can select and copy text from this window!"""
             'garmin_password': _encode_fallback(password),  # fallback for early-boot
             'wahoo_folder': self.wahoo_folder.get(),
             'mywhoosh_folder': self.mywhoosh_folder.get(),
+            'trainerday_folder': self.trainerday_folder.get() if hasattr(self, 'trainerday_folder') else '',
             'start_with_windows': self.start_with_windows.get(),
             'check_interval': self.interval_var.get()
         }
@@ -846,9 +1161,18 @@ You can select and copy text from this window!"""
         self.garmin_password.insert(0, password)
         self.wahoo_folder.insert(0, self.config.get('wahoo_folder', ''))
         self.mywhoosh_folder.insert(0, self.config.get('mywhoosh_folder', ''))
+        # TrainerDay folder (new in 1.0.5)
+        if hasattr(self, 'trainerday_folder'):
+            self.trainerday_folder.insert(0, self.config.get('trainerday_folder', ''))
         self.start_with_windows.set(self.config.get('start_with_windows', False))
         self.interval_var.set(self.config.get('check_interval', 5))
         self.check_interval = self.interval_var.get() * 60  # Convert to seconds
+
+        # Update app sections and status icons based on loaded settings
+        try:
+            self.update_app_sections()
+        except Exception:
+            pass
     
     def save_settings(self):
         # Validate Garmin credentials if they've been entered
@@ -1112,20 +1436,26 @@ You can select and copy text from this window!"""
             log_warning("Sync attempted without Garmin credentials")
             return False
         
-        wahoo = self.wahoo_folder.get()
-        mywhoosh = self.mywhoosh_folder.get()
-        
-        # At least one folder must be configured
-        if not wahoo and not mywhoosh:
+        wahoo = self.wahoo_folder.get().strip()
+        mywhoosh = self.mywhoosh_folder.get().strip()
+        trainerday = self.trainerday_folder.get().strip() if hasattr(self, 'trainerday_folder') else ""
+
+        # Consider an app "selected" if it has any folder text entered
+        wahoo_selected = bool(wahoo)
+        mywhoosh_selected = bool(mywhoosh)
+        trainerday_selected = bool(trainerday)
+
+        # At least one app must have a folder configured
+        if not (wahoo_selected or mywhoosh_selected or trainerday_selected):
             messagebox.showerror(
                 "No Folders Configured",
-                "Please configure at least one folder:\n\n• Wahoo Folder (for Wahoo fitness files)\n• MyWhoosh Folder (for MyWhoosh activities)\n\nUse the Browse buttons to select your folders."
+                "Please configure at least one folder in Folder Settings (Wahoo, MyWhoosh, or TrainerDay)."
             )
             log_warning("Sync attempted without any folders configured")
             return False
-        
+
         # Warn about non-existent folders but allow sync
-        if wahoo and not os.path.isdir(wahoo):
+        if wahoo_selected and not os.path.isdir(wahoo):
             response = messagebox.askyesno(
                 "Wahoo Folder Not Found",
                 f"Wahoo folder not found:\n{wahoo}\n\nContinue anyway?"
@@ -1134,7 +1464,7 @@ You can select and copy text from this window!"""
                 return False
             log_warning(f"Wahoo folder not found but user chose to continue: {wahoo}")
         
-        if mywhoosh and not os.path.isdir(mywhoosh):
+        if mywhoosh_selected and not os.path.isdir(mywhoosh):
             response = messagebox.askyesno(
                 "MyWhoosh Folder Not Found",
                 f"MyWhoosh folder not found:\n{mywhoosh}\n\nContinue anyway?"
@@ -1142,7 +1472,17 @@ You can select and copy text from this window!"""
             if not response:
                 return False
             log_warning(f"MyWhoosh folder not found but user chose to continue: {mywhoosh}")
-        
+
+        if trainerday_selected and trainerday and not os.path.isdir(trainerday):
+            response = messagebox.askyesno(
+                "TrainerDay Folder Not Found",
+                f"TrainerDay folder not found:\n{trainerday}\n\nContinue anyway?"
+            )
+            if not response:
+                return False
+            log_warning(f"TrainerDay folder not found but user chose to continue: {trainerday}")
+
+        self._update_app_status_icons()
         return True
     
     def login_garmin_with_retry(self, max_retries=3, delay=2):
@@ -1220,19 +1560,29 @@ You can select and copy text from this window!"""
         
         uploaded_count = 0
         last_uploaded_file = None
-        
-        # Sync Wahoo files
-        wahoo_folder = self.wahoo_folder.get()
+
+        # Determine which apps have folders configured
+        wahoo_folder = self.wahoo_folder.get().strip()
+        mywhoosh_folder = self.mywhoosh_folder.get().strip()
+        trainerday_folder = self.trainerday_folder.get().strip() if hasattr(self, 'trainerday_folder') else ""
+
+        # Sync Wahoo files (only if folder exists)
         if wahoo_folder and os.path.isdir(wahoo_folder):
             count, last_file = self._process_folder(wahoo_folder, "Wahoo")
             uploaded_count += count
             if last_file:
                 last_uploaded_file = last_file
-        
-        # Sync MyWhoosh files
-        mywhoosh_folder = self.mywhoosh_folder.get()
+
+        # Sync MyWhoosh files (only if folder exists)
         if mywhoosh_folder and os.path.isdir(mywhoosh_folder):
             count, last_file = self._process_folder(mywhoosh_folder, "MyWhoosh")
+            uploaded_count += count
+            if last_file:
+                last_uploaded_file = last_file
+
+        # Sync TrainerDay files (only if folder exists)
+        if trainerday_folder and os.path.isdir(trainerday_folder):
+            count, last_file = self._process_folder(trainerday_folder, "TrainerDay")
             uploaded_count += count
             if last_file:
                 last_uploaded_file = last_file
@@ -1261,57 +1611,66 @@ You can select and copy text from this window!"""
         last_uploaded_file = None
         uploaded_folder = os.path.join(folder, "uploaded")
         os.makedirs(uploaded_folder, exist_ok=True)
-        
+
+        # Decide which file extensions to process for this source
+        # Wahoo / MyWhoosh use .fit; TrainerDay exports .tcx via Dropbox
+        if source_name == "TrainerDay":
+            allowed_exts = (".fit", ".tcx")
+        else:
+            allowed_exts = (".fit",)
+
         # Add blank line before new job for better log grouping
         log_separator()
-        logger.info(f"Processing {source_name} folder: {folder}")
-        
+        logger.info(f"Processing {source_name} folder: {folder} (extensions: {', '.join(allowed_exts)})")
+
         try:
             for filename in os.listdir(folder):
                 # Skip the 'uploaded' subfolder
                 if filename == 'uploaded':
                     continue
-                    
-                if filename.lower().endswith('.fit'):
-                    file_path = os.path.join(folder, filename)
-                    
-                    if os.path.isfile(file_path):
-                        self.update_status(f"Uploading {filename}...", "orange")
-                        log_info(f"Uploading file: {filename} from {source_name}")
-                        
-                        try:
-                            self._maybe_log_upload_day_marker()
-                            self.garmin_client.upload_activity(file_path)
-                            uploaded += 1
-                            last_uploaded_file = filename
-                            log_success(f"Successfully uploaded: {filename}")
-                            upload_logger.info(f"Uploaded: {filename}")
-                            
 
-                            # Move to uploaded folder
+                # Only process files with the allowed extensions
+                if not filename.lower().endswith(allowed_exts):
+                    continue
+
+                file_path = os.path.join(folder, filename)
+
+                if os.path.isfile(file_path):
+                    self.update_status(f"Uploading {filename}...", "orange")
+                    log_info(f"Uploading file: {filename} from {source_name}")
+
+                    try:
+                        self._maybe_log_upload_day_marker()
+                        self.garmin_client.upload_activity(file_path)
+                        uploaded += 1
+                        last_uploaded_file = filename
+                        log_success(f"Successfully uploaded: {filename}")
+                        upload_logger.info(f"Uploaded: {filename}")
+
+                        # Move to uploaded folder
+                        dest_path = os.path.join(uploaded_folder, filename)
+                        try:
+                            shutil.move(file_path, dest_path)
+                            log_info(f"Moved {filename} to uploaded folder")
+                        except PermissionError:
+                            shutil.copy2(file_path, dest_path)
+                            log_warning(f"File locked, copied instead of moved: {filename}")
+
+                        self.update_status(f"Uploaded {filename}", "green")
+
+                    except Exception as e:
+                        error_msg = str(e)
+                        if "409" in error_msg or "Conflict" in error_msg:
+                            log_info(f"File already uploaded (409 conflict): {filename}")
+                            # Already uploaded, move it
                             dest_path = os.path.join(uploaded_folder, filename)
                             try:
                                 shutil.move(file_path, dest_path)
-                                log_info(f"Moved {filename} to uploaded folder")
                             except PermissionError:
                                 shutil.copy2(file_path, dest_path)
-                                log_warning(f"File locked, copied instead of moved: {filename}")
-                            
-                            self.update_status(f"Uploaded {filename}", "green")
-                        
-                        except Exception as e:
-                            error_msg = str(e)
-                            if "409" in error_msg or "Conflict" in error_msg:
-                                log_info(f"File already uploaded (409 conflict): {filename}")
-                                # Already uploaded, move it
-                                dest_path = os.path.join(uploaded_folder, filename)
-                                try:
-                                    shutil.move(file_path, dest_path)
-                                except PermissionError:
-                                    shutil.copy2(file_path, dest_path)
-                            else:
-                                log_error(f"Failed to upload {filename}: {error_msg}")
-                                self.update_status(f"Failed to upload {filename}: {error_msg}", "red")
+                        else:
+                            log_error(f"Failed to upload {filename}: {error_msg}")
+                            self.update_status(f"Failed to upload {filename}: {error_msg}", "red")
         
         except Exception as e:
             log_error(f"Error processing {source_name} folder: {str(e)}")
@@ -1546,7 +1905,7 @@ You can select and copy text from this window!"""
         ttk.Label(content, text=f"Version {VERSION}", font=('Arial', 10)).pack(pady=(0, 15))
         
         # Description
-        desc_text = "Automatically upload workout activities from Wahoo and MyWhoosh to Garmin Connect."
+        desc_text = "Automatically upload workout activities from Wahoo, MyWhoosh, and TrainerDay to Garmin Connect."
         ttk.Label(content, text=desc_text, wraplength=420, justify='center').pack(pady=(0, 15))
         
         # Developer info with logo

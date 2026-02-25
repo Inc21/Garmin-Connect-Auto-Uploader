@@ -1,14 +1,18 @@
 # Garmin Connect Uploader
 
-Automatically upload workout activities from Wahoo and MyWhoosh to Garmin Connect.
+Automatically upload workout activities from Wahoo, MyWhoosh, and TrainerDay to Garmin Connect.
 
-Version 1.0.2 | Windows Desktop Application (Nuitka onefile build)
+Version 1.0.5 | Windows Desktop Application (Nuitka onefile build)
 
 ---
 
 ## What It Does
 
-This app automatically syncs your Wahoo and MyWhoosh workout files (.FIT) to Garmin Connect, so your activities appear in your Garmin dashboard without manual uploads.
+This app automatically syncs your workout files to Garmin Connect so your activities appear in your Garmin dashboard without manual uploads.
+
+- **Wahoo** via Dropbox (.FIT files)
+- **MyWhoosh** from its local cache (.FIT files)
+- **TrainerDay** via Dropbox (.TCX / .FIT files)
 
 **Key Features:**
 
@@ -36,9 +40,12 @@ The app handles the two platforms differently based on how they store files:
 
 I built this originally as a personal Python script to solve my own manual upload frustrations. Because this app handles Garmin credentials, transparency is a priority:
 
-- **Local Only:** Your credentials are never sent to any server except Garmin’s official login endpoint.
-- **Encryption:** Your Garmin password is not stored in plain text. It is encrypted locally on your machine using a unique hardware-linked key before being saved to `uploader_config.json`.
-- **Open Source:** The full source code is available here on GitHub for anyone to audit.
+- **Local Only:** Your credentials are never sent to any server except Garmin’s official Garmin Connect endpoint.
+- **Windows Credential Manager:** Your Garmin password is stored primarily in Windows Credential Manager via the `keyring` library. You can remove it at any time via the Windows *Credential Manager* control panel.
+- **Config-file fallback (for early boot only):** A simple Base64-encoded copy of your password is kept in `uploader_config.json` as a fallback if Credential Manager is not available at boot. This is **not meant as strong encryption**, just enough to avoid plain text in the config file.
+- **No custom crypto:** There is no XOR or “home‑grown” encryption in the current versions; standard libraries are used instead.
+- **No registry writes:** Auto-start is handled only via a Startup-folder shortcut (`GarminUploader.lnk`), never the `HKCU\...\Run` registry key.
+- **Open Source:** The full source code is available here on GitHub for anyone to audit or rebuild.
 
 ---
 
@@ -57,11 +64,26 @@ I built this originally as a personal Python script to solve my own manual uploa
 
 ### Step 1: Download
 
-1. Download `GarminUploader-v1.0.2.exe` from the releases/dist folder
+**Two download options are available:**
+
+| Option | File | Best for |
+|--------|------|----------|
+| **Folder build (recommended)** | `GarminUploader-v1.0.5-folder.zip` | Most users — less likely to trigger Windows Defender |
+| **Single-file build** | `GarminUploader-v1.0.5.exe` | Advanced users who prefer a single executable |
+
+#### Option A: Folder build (recommended)
+
+1. Download `GarminUploader-v1.0.5-folder.zip` from Releases
+2. Extract the ZIP to a folder (e.g., `C:\GarminUploader\` or your Desktop)
+3. Run `GarminUploader.exe` from the extracted folder
+
+#### Option B: Single-file build
+
+1. Download `GarminUploader-v1.0.5.exe` from Releases
 2. Place it anywhere you like (Desktop, Documents, etc.)
 3. Double-click to run
 
-**Note:** The app is now built as a **single-file Nuitka executable** to reduce antivirus false positives (including Windows Defender). Windows may still show a generic security warning ("Windows protected your PC") – click "More info" → "Run anyway" if you trust the source.
+**Note:** The single-file build is a packed Nuitka executable which may trigger Windows Defender ML heuristics. If Defender blocks or quarantines it, use the folder build instead. See [Windows Defender / Antivirus Blocks the App](#️-windows-defender--antivirus-blocks-the-app) for details.
 
 ---
 
@@ -77,7 +99,7 @@ I built this originally as a personal Python script to solve my own manual uploa
 
 ### Step 3: Configure Your Folders
 
-You need **at least one folder** configured:
+You need **at least one folder** configured (Wahoo, MyWhoosh, or TrainerDay):
 
 #### **Option A: Wahoo (via Dropbox)**
 
@@ -103,6 +125,21 @@ You need **at least one folder** configured:
    ```
 
 **Tip:** Press `Win + R`, paste `%LOCALAPPDATA%\MyWhoosh\MyWhoosh\Cache\Cache_Data`, press Enter
+
+#### **Option C: TrainerDay (via Dropbox)**
+
+1. Click **"📖 Help"** button next to TrainerDay Folder
+2. Follow the instructions to:
+   - Open <https://app.trainerday.com> and log in
+   - Click your user icon → **Connections** and connect TrainerDay to Dropbox / enable activity sync
+3. After the first sync, Dropbox will contain a TrainerDay folder, for example:
+
+   ```text
+   C:\Users\YourName\Dropbox\TrainerDay
+   C:\Users\YourName\Dropbox\Apps\TrainerDay
+   ```
+
+4. Click **"Browse"** and select that TrainerDay folder.
 
 ### Step 4: Set Check Interval (Optional)
 
@@ -218,7 +255,7 @@ The app creates files in the **same folder as the EXE**:
 
 ### ❌ "No Folders Configured" Error
 
-- You must configure at least ONE folder (Wahoo OR MyWhoosh)
+- You must configure at least ONE folder (Wahoo, MyWhoosh, or TrainerDay)
 - Click Browse to select folder
 - Click Help button for setup instructions
 
@@ -249,6 +286,41 @@ The app creates files in the **same folder as the EXE**:
 - Look in bottom-right corner of Windows taskbar
 - Click small **^** arrow to show hidden icons
 - Garmin logo should appear there
+
+### 🛡️ Windows Defender / Antivirus Blocks the App
+
+Because this app is a small, niche tool that logs in to a website, stores credentials, and can auto-start with Windows, some antivirus programs (especially Windows Defender's ML-based heuristics) may incorrectly flag it as suspicious.
+
+**Why this happens:**
+
+- The app is not code-signed (requires an expensive certificate)
+- It combines network activity + credential storage + auto-start — patterns that malware also uses
+- Packed single-file executables trip more heuristics than normal installers
+
+**What you can do:**
+
+1. **Try the folder build:** Download `GarminUploader-v1.0.5-folder.zip` instead of the single `.exe`. Unpacked builds are less likely to trigger false positives.
+
+2. **Add an exception:** If you trust the source, add the app folder to Windows Defender's exclusion list:
+   - Open **Windows Security** → **Virus & threat protection** → **Manage settings**
+   - Scroll to **Exclusions** → **Add or remove exclusions**
+   - Add the folder containing `GarminUploader.exe`
+
+3. **Report the false positive to Microsoft:**
+   - Go to: <https://www.microsoft.com/en-us/wdsi/filesubmission>
+   - Select **Home user** → **Incorrectly detected as malware**
+   - Upload the `.exe` file and submit
+
+4. **Build from source:** If you prefer not to trust pre-built binaries:
+
+   ```bash
+   git clone https://github.com/Inc21/Wahoo-and-MyWhoos-to-Garmin-Conect-Auto-Uploader.git
+   cd Wahoo-and-MyWhoos-to-Garmin-Conect-Auto-Uploader
+   pip install -r requirements.txt
+   python uploader_gui.py
+   ```
+
+**Verify authenticity:** Compare the SHA-256 hash of your download against `CHECKSUMS.txt` in the release.
 
 ---
 

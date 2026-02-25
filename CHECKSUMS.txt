@@ -1,0 +1,15 @@
+# SHA-256 Checksums for Garmin Connect Uploader v1.0.5
+# Generated: 2026-02-25
+#
+# To verify on Windows PowerShell:
+#   Get-FileHash -Algorithm SHA256 <filename>
+#
+# To verify on Linux/macOS:
+#   sha256sum <filename>
+#
+
+# Folder build (Defender-friendly, recommended)
+9CAB9A3E8CCA054BD91CE0B5EFD19C9912A00D640FAD546B21FCAC8392DBFA3D  GarminUploader.exe (in GarminUploader-v1.0.5-folder.zip)
+
+# Note: The single-file onefile build may trigger Windows Defender ML heuristics.
+# If you experience issues, use the folder build instead.

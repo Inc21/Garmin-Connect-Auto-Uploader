@@ -15,6 +15,20 @@ From **v1.0.1** onwards, the app includes a "Smart Migration" feature to handle 
 >
 > **Upgrading from v1.0.2 or earlier:** The old Startup-folder shortcut (`GarminUploader.lnk`) and XOR-encrypted password in `uploader_config.json` are automatically migrated on first launch of v1.0.3. No manual steps required.
 
+## [1.0.5] - 2026-02-25
+
+### Added (1.0.5)
+
+- **TrainerDay support** as a third app source alongside Wahoo and MyWhoosh. TrainerDay uses the same Dropbox-based folder structure as Wahoo and the same upload-and-move-to-`uploaded` behaviour, and supports both `.FIT` and `.TCX` workout files.
+
+### Changed (1.0.5)
+
+- **Refined Folder Settings UI** with collapsible sections and status-only app headers for Wahoo, MyWhoosh, and TrainerDay. Each header shows a status pill (for example: *Not configured*, *Folder missing*, *Ready*), and the sync logic automatically skips apps that are not in a ready state.
+- **Improved visuals and layout:** Larger app logos for better readability and automatic window height adjustment based on the expanded/collapsed sections, reducing empty space when sections are collapsed.
+- **TrainerDay quality-of-life tweaks:** Added an in-app TrainerDay help dialog explaining how to connect TrainerDay to Dropbox and where to find the exported folder on disk.
+- **Dual-build releases:** Now shipping both a single-file `.exe` and a folder build (`.zip`). The folder build is less likely to trigger Windows Defender ML heuristics. See README for details.
+- **Added `CHECKSUMS.txt`** with SHA-256 hashes for verifying release authenticity.
+
 ## [1.0.4] - 2026-02-09
 
 ### Changed (1.0.4)
