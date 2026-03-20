@@ -46,8 +46,48 @@ def _get_base_and_log_dirs():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     return script_dir, script_dir
 
+def _resolve_existing_or_default(filename, default_dir):
+    """Return a path for config/log files, preferring existing files.
+
+    Priority:
+    - Existing file in the parent of default_dir (shared across versioned folders)
+    - Existing file in default_dir (legacy behavior)
+    - Otherwise, create in the parent of default_dir when safe, else in default_dir
+    """
+    parent_dir = os.path.dirname(default_dir) if default_dir else ""
+    parent_path = os.path.join(parent_dir, filename) if parent_dir else ""
+
+    # Prefer an existing file in the parent directory so multiple versioned
+    # folders (or different builds) automatically share the same files.
+    if parent_path and os.path.isfile(parent_path):
+        return parent_path
+
+    # Fall back to any existing file in the current (exe) directory to remain
+    # compatible with older versions that wrote files there.
+    current_path = os.path.join(default_dir, filename) if default_dir else filename
+    if os.path.isfile(current_path):
+        return current_path
+
+    # No existing file anywhere: decide where to create a new one.
+    # Prefer the parent directory when it is a normal folder (not a drive root),
+    # so future versioned folders will automatically reuse it.
+    def _is_drive_root(path: str) -> bool:
+        if not path:
+            return False
+        drive, tail = os.path.splitdrive(path)
+        tail = tail.replace("/", "\\").rstrip("\\")
+        # e.g. "C:\\" -> tail == ""
+        return bool(drive) and tail == ""
+
+    if parent_dir and not _is_drive_root(parent_dir):
+        return parent_path
+
+    # As a last resort (e.g. onefile exe placed directly in an app folder
+    # whose parent is the drive root), create the file next to the exe.
+    return current_path
+
 BASE_DIR, LOG_DIR = _get_base_and_log_dirs()
-CONFIG_FILE = os.path.join(LOG_DIR, _CONFIG_FILENAME)
+CONFIG_FILE = _resolve_existing_or_default(_CONFIG_FILENAME, LOG_DIR)
 
 def find_resource(filename):
     """Return first existing path for bundled/static assets."""
@@ -67,10 +107,10 @@ GITHUB_LOGO_PATH = find_resource(os.path.join("assets", "github_logo.png"))
 WAHOO_LOGO_PATH = find_resource(os.path.join("assets", "wahoo.png"))
 MYWHOOSH_LOGO_PATH = find_resource(os.path.join("assets", "mywhoosh.png"))
 TRAINERDAY_LOGO_PATH = find_resource(os.path.join("assets", "trainerday.png"))
-VERSION = "1.0.5"
-LOG_FILE = os.path.join(LOG_DIR, "garmin_uploader.log")
+VERSION = "1.0.6"
+LOG_FILE = _resolve_existing_or_default("garmin_uploader.log", LOG_DIR)
 # Upload log (single file; month separators written when month changes)
-UPLOAD_LOG_FILE = os.path.join(LOG_DIR, "garmin_uploads.log")
+UPLOAD_LOG_FILE = _resolve_existing_or_default("garmin_uploads.log", LOG_DIR)
 MAX_LOG_SIZE_MB = 10  # Rotate log after 10MB
 
 # Setup logging with rotation (standard format without icons by default)
@@ -1641,7 +1681,84 @@ You can select and copy text from this window!"""
 
                     try:
                         self._maybe_log_upload_day_marker()
+
+                        # For TrainerDay, capture a snapshot of recent activities so we can
+                        # identify which one was created by this upload.
+                        pre_upload_ids = None
+                        if source_name == "TrainerDay":
+                            try:
+                                pre_activities = self.garmin_client.get_activities(0, 10)
+                                pre_upload_ids = {
+                                    a["activityId"]
+                                    for a in pre_activities
+                                    if isinstance(a, dict) and "activityId" in a
+                                }
+                            except Exception as pre_err:
+                                log_warning(
+                                    f"Could not fetch pre-upload activities for TrainerDay title mapping: {pre_err}"
+                                )
+
                         self.garmin_client.upload_activity(file_path)
+
+                        # For TrainerDay uploads, try to set a friendly activity title
+                        if source_name == "TrainerDay":
+                            try:
+                                base_name, _ = os.path.splitext(filename)
+                                if " - " in base_name:
+                                    activity_title = base_name.split(" - ", 1)[1].strip()
+                                    if activity_title:
+                                        activity_id = None
+
+                                        # First try to find a new activity that appeared
+                                        # between the pre- and post-upload activity lists.
+                                        if pre_upload_ids is not None:
+                                            try:
+                                                max_attempts = 5
+                                                delay_seconds = 3
+                                                for attempt in range(max_attempts):
+                                                    post_activities = self.garmin_client.get_activities(0, 10)
+                                                    new_activities = [
+                                                        a
+                                                        for a in post_activities
+                                                        if isinstance(a, dict)
+                                                        and "activityId" in a
+                                                        and a["activityId"] not in pre_upload_ids
+                                                    ]
+                                                    if len(new_activities) == 1:
+                                                        activity_id = new_activities[0][
+                                                            "activityId"
+                                                        ]
+                                                        break
+                                                    # If we didn't see exactly one new activity yet,
+                                                    # wait a bit and let Garmin finish processing.
+                                                    if attempt < max_attempts - 1:
+                                                        time.sleep(delay_seconds)
+                                            except Exception as diff_err:
+                                                log_warning(
+                                                    f"Could not diff activities for TrainerDay title mapping: {diff_err}"
+                                                )
+
+                                        # If diffing failed or wasn't conclusive, fall back
+                                        # to Garmin's notion of the last activity.
+                                        if activity_id is None:
+                                            last_activity = (
+                                                self.garmin_client.get_last_activity()
+                                            )
+                                            if last_activity and "activityId" in last_activity:
+                                                activity_id = last_activity["activityId"]
+
+                                        if activity_id is not None:
+                                            self.garmin_client.set_activity_name(
+                                                activity_id, activity_title
+                                            )
+                                            log_info(
+                                                f"Set TrainerDay activity title to '{activity_title}' for {filename} (activityId={activity_id})"
+                                            )
+                            except Exception as title_err:
+                                log_warning(
+                                    f"Could not set TrainerDay activity title for {filename}: {title_err}"
+                                )
+
                         uploaded += 1
                         last_uploaded_file = filename
                         log_success(f"Successfully uploaded: {filename}")

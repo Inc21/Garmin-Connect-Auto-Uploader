@@ -15,6 +15,13 @@ From **v1.0.1** onwards, the app includes a "Smart Migration" feature to handle 
 >
 > **Upgrading from v1.0.2 or earlier:** The old Startup-folder shortcut (`GarminUploader.lnk`) and XOR-encrypted password in `uploader_config.json` are automatically migrated on first launch of v1.0.3. No manual steps required.
 
+## [1.0.6] - 2026-03-20
+
+### Changed (1.0.6)
+
+- **TrainerDay activity titles:** When uploading TrainerDay workouts, filenames like `2026-03-20 18-32-32 - Torque Blocks.tcx` are now parsed so that the Garmin activity name is set to the part after the dash (for example, "Torque Blocks").
+- **More reliable TrainerDay title mapping:** Added a short polling step after each TrainerDay upload to wait for Garmin to finish processing and then identify the newly created activity before renaming it, reducing the chance of renaming the wrong activity.
+
 ## [1.0.5] - 2026-02-25
 
 ### Added (1.0.5)

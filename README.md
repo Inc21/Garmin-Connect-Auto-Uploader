@@ -2,7 +2,7 @@
 
 Automatically upload workout activities from Wahoo, MyWhoosh, and TrainerDay to Garmin Connect.
 
-Version 1.0.5 | Windows Desktop Application (Nuitka onefile build)
+Version 1.0.6 | Windows Desktop Application (Nuitka onefile + folder build)
 
 ---
 
@@ -60,6 +60,8 @@ I built this originally as a personal Python script to solve my own manual uploa
 3. Run it once - if you had "Start with Windows" enabled, the app will detect the old shortcut and offer to update it
 4. Your existing settings and logs are preserved automatically (no reconfiguration needed!)
 
+**For folder builds:** If you keep your configuration and log files in a parent folder (for example `C:\GarminUploader\`) and extract each new `GarminUploader-v1.0.x-folder.zip` into a subfolder under that parent (for example `C:\GarminUploader\GarminUploader-v1.0.6-folder\`), the new version will automatically reuse `uploader_config.json`, `garmin_uploader.log`, and `garmin_uploads.log` from the parent folder. You do **not** need to copy these files into each new version folder.
+
 ---
 
 ### Step 1: Download
@@ -68,18 +70,18 @@ I built this originally as a personal Python script to solve my own manual uploa
 
 | Option | File | Best for |
 |--------|------|----------|
-| **Folder build (recommended)** | `GarminUploader-v1.0.5-folder.zip` | Most users — less likely to trigger Windows Defender |
-| **Single-file build** | `GarminUploader-v1.0.5.exe` | Advanced users who prefer a single executable |
+| **Folder build (recommended)** | `GarminUploader-v1.0.6-folder.zip` | Most users — less likely to trigger Windows Defender |
+| **Single-file build** | `GarminUploader-v1.0.6.exe` | Advanced users who prefer a single executable |
 
 #### Option A: Folder build (recommended)
 
-1. Download `GarminUploader-v1.0.5-folder.zip` from Releases
+1. Download `GarminUploader-v1.0.6-folder.zip` from Releases
 2. Extract the ZIP to a folder (e.g., `C:\GarminUploader\` or your Desktop)
 3. Run `GarminUploader.exe` from the extracted folder
 
 #### Option B: Single-file build
 
-1. Download `GarminUploader-v1.0.5.exe` from Releases
+1. Download `GarminUploader-v1.0.6.exe` from Releases
 2. Place it anywhere you like (Desktop, Documents, etc.)
 3. Double-click to run
 
@@ -216,11 +218,24 @@ Click **"Save Settings"** - this will:
 
 ## Files Created
 
-The app creates files in the **same folder as the EXE**:
+The app stores its configuration and log files alongside the app, usually in a shared parent folder so that new versions can reuse them:
 
 1. **`uploader_config.json`** – Your settings (password is encrypted)
 2. **`garmin_uploader.log`** – Main activity log with timestamps (auto-rotates at 10MB, keeps 3 backups)
 3. **`garmin_uploads.log`** – Dedicated uploads-only log that records successful uploads with daily separators (easier to review your upload history).
+
+**Recommended layout for folder builds (for easy upgrades):**
+
+```text
+C:\\GarminUploader\\
+    uploader_config.json
+    garmin_uploader.log
+    garmin_uploads.log
+    GarminUploader-v1.0.6-folder\\
+        GarminUploader.exe
+```
+
+If these files exist in the parent folder (for example `C:\\GarminUploader\\`), any new version you place in a subfolder under that parent will automatically reuse them. You do **not** need to copy the files into each new version folder.
 
 **View the logs:**
 
