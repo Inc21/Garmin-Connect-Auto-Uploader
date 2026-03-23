@@ -2,7 +2,7 @@
 
 Automatically upload workout activities from Wahoo, MyWhoosh, and TrainerDay to Garmin Connect.
 
-Version 1.0.6 | Windows Desktop Application (Nuitka onefile + folder build)
+Version 1.0.7 | Windows Desktop Application (Nuitka onefile + folder build)
 
 ---
 
@@ -19,7 +19,8 @@ This app automatically syncs your workout files to Garmin Connect so your activi
 - ✅ Automatic background syncing
 - ✅ Starts with Windows (optional)
 - ✅ Secure password encryption
-- ✅ Validates credentials before saving
+- ✅ Two-Factor Authentication (MFA/2FA) support
+- ✅ Manual credential testing with "Test Connection" button
 - ✅ Detailed activity logging
 - ✅ System tray support
 
@@ -70,18 +71,18 @@ I built this originally as a personal Python script to solve my own manual uploa
 
 | Option | File | Best for |
 |--------|------|----------|
-| **Folder build (recommended)** | `GarminUploader-v1.0.6-folder.zip` | Most users — less likely to trigger Windows Defender |
-| **Single-file build** | `GarminUploader-v1.0.6.exe` | Advanced users who prefer a single executable |
+| **Folder build (recommended)** | `GarminUploader-v1.0.7-folder.zip` | Most users — less likely to trigger Windows Defender |
+| **Single-file build** | `GarminUploader-v1.0.7.exe` | Advanced users who prefer a single executable |
 
 #### Option A: Folder build (recommended)
 
-1. Download `GarminUploader-v1.0.6-folder.zip` from Releases
+1. Download `GarminUploader-v1.0.7-folder.zip` from Releases
 2. Extract the ZIP to a folder (e.g., `C:\GarminUploader\` or your Desktop)
 3. Run `GarminUploader.exe` from the extracted folder
 
 #### Option B: Single-file build
 
-1. Download `GarminUploader-v1.0.6.exe` from Releases
+1. Download `GarminUploader-v1.0.7.exe` from Releases
 2. Place it anywhere you like (Desktop, Documents, etc.)
 3. Double-click to run
 
@@ -95,9 +96,16 @@ I built this originally as a personal Python script to solve my own manual uploa
 
 1. Enter your **Garmin Connect email**
 2. Enter your **Garmin Connect password**
-3. Click **"Save Settings"** button
+3. Click **"Test Connection"** to verify your credentials (optional but recommended)
+4. Click **"Save Settings"** button
 
-**Important:** The app will test your login and show ✅ or ❌. Your password is encrypted in the settings file.
+**Two-Factor Authentication (MFA/2FA):**
+- If you have two-step verification enabled on your Garmin account, a dialog will pop up asking for your 6-digit verification code when you test the connection or first sync
+- Enter the code from your authenticator app or the code Garmin texts/emails you
+- Your authentication tokens are securely saved and automatically reused for approximately **one year**
+- You'll only need to enter the MFA code once per year (or when you change your password)
+
+**Important:** Your password is encrypted and stored in Windows Credential Manager. The app only validates credentials when they change, not every time you save settings.
 
 ### Step 3: Configure Your Folders
 
@@ -231,7 +239,7 @@ C:\\GarminUploader\\
     uploader_config.json
     garmin_uploader.log
     garmin_uploads.log
-    GarminUploader-v1.0.6-folder\\
+    GarminUploader-v1.0.7-folder\\
         GarminUploader.exe
 ```
 

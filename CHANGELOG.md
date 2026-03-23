@@ -15,6 +15,18 @@ From **v1.0.1** onwards, the app includes a "Smart Migration" feature to handle 
 >
 > **Upgrading from v1.0.2 or earlier:** The old Startup-folder shortcut (`GarminUploader.lnk`) and XOR-encrypted password in `uploader_config.json` are automatically migrated on first launch of v1.0.3. No manual steps required.
 
+## [1.0.7] - 2026-03-22
+
+### Added (1.0.7)
+
+- **Two-Factor Authentication (MFA/2FA) support:** The app now fully supports Garmin accounts with two-step verification enabled. When logging in for the first time (or when credentials change), you'll be prompted to enter your 6-digit verification code. Authentication tokens are securely saved and automatically reused for approximately one year, so you only need to enter the MFA code once.
+- **Test Connection button:** Added a dedicated "Test Connection" button next to the password field in Garmin Settings. Use this to manually verify your Garmin credentials without saving settings.
+
+### Changed (1.0.7)
+
+- **Smarter credential validation:** The app now only prompts to test Garmin credentials when they've actually changed, preventing unnecessary MFA prompts every time you save settings. When credentials change, you'll be asked if you want to test the connection before saving.
+- **Better rate limit handling:** Added specific error detection and user-friendly messaging for Garmin's rate limiting (HTTP 429 errors), with clear instructions to wait 15-30 minutes before retrying.
+
 ## [1.0.6] - 2026-03-20
 
 ### Changed (1.0.6)

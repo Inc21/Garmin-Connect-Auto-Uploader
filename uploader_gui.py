@@ -21,6 +21,7 @@ import logging
 import base64
 import tempfile
 from garminconnect import Garmin
+import garth
 from PIL import Image, ImageTk
 from pystray import Icon, Menu, MenuItem
 import webbrowser
@@ -107,7 +108,7 @@ GITHUB_LOGO_PATH = find_resource(os.path.join("assets", "github_logo.png"))
 WAHOO_LOGO_PATH = find_resource(os.path.join("assets", "wahoo.png"))
 MYWHOOSH_LOGO_PATH = find_resource(os.path.join("assets", "mywhoosh.png"))
 TRAINERDAY_LOGO_PATH = find_resource(os.path.join("assets", "trainerday.png"))
-VERSION = "1.0.6"
+VERSION = "1.0.7"
 LOG_FILE = _resolve_existing_or_default("garmin_uploader.log", LOG_DIR)
 # Upload log (single file; month separators written when month changes)
 UPLOAD_LOG_FILE = _resolve_existing_or_default("garmin_uploads.log", LOG_DIR)
@@ -322,12 +323,53 @@ class ConnectUploaderGUI:
         self.session_dir = os.path.join(os.path.expanduser("~"), "AppData", "Local", "GarminUploader", "session")
         os.makedirs(self.session_dir, exist_ok=True)
             
-        # Try to login with session first
+        # Initialize login state (will be set by try_session_login if successful)
         self.garmin_client = None
+        self.is_logged_in = False
+        
+        # Try to login quietly with saved session on startup
         self.try_session_login()
         
+    def prompt_mfa_code(self):
+        """Prompt user for MFA code using a tkinter dialog"""
+        mfa_code = tk.StringVar()
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Two-Factor Authentication")
+        dialog.geometry("400x180")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center the dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
+        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{x}+{y}")
+        
+        frame = ttk.Frame(dialog, padding="20")
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(frame, text="🔐 Two-Factor Authentication Required", font=('Segoe UI', 11, 'bold')).pack(pady=(0, 10))
+        ttk.Label(frame, text="Enter the verification code from your authenticator app:", wraplength=350).pack(pady=(0, 10))
+        
+        entry = ttk.Entry(frame, textvariable=mfa_code, font=('Segoe UI', 11), width=20, justify='center')
+        entry.pack(pady=(0, 15))
+        entry.focus_set()
+        
+        def on_submit():
+            dialog.destroy()
+        
+        entry.bind('<Return>', lambda e: on_submit())
+        
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack()
+        ttk.Button(btn_frame, text="Submit", command=on_submit).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=lambda: [mfa_code.set(''), dialog.destroy()]).pack(side=tk.LEFT, padx=5)
+        
+        dialog.wait_window()
+        return mfa_code.get().strip()
+    
     def try_session_login(self):
-        """Try to login using saved session tokens"""
+        """Try to login using saved garth session tokens"""
         try:
             email = self.garmin_email.get() if self.garmin_email else self.config.get('garmin_email', '')
             password = self.garmin_password.get() if self.garmin_password else self.config.get('garmin_password', '')
@@ -337,30 +379,27 @@ class ConnectUploaderGUI:
                 
             # Create session directory specific to this user
             user_session_dir = os.path.join(self.session_dir, email.replace('@', '_').replace('.', '_'))
-                
-            # Check if session files exist
-            user_session_dir = os.path.join(self.session_dir, email.replace('@', '_').replace('.', '_'))
-            session_files = []
-            if os.path.exists(user_session_dir):
-                session_files = [f for f in os.listdir(user_session_dir) if os.path.isfile(os.path.join(user_session_dir, f))]
-            if session_files:
-                # Try to create client with session_dir if supported
+            
+            # Try to resume garth session
+            if os.path.exists(user_session_dir) and os.listdir(user_session_dir):
                 try:
-                    self.garmin_client = Garmin(email, password, session_dir=user_session_dir)
-                    # Try to get user profile to verify session is valid
-                    self.garmin_client.get_user_profile()
-                    logger.info("Successfully logged in using saved session")
+                    # Set GARTH_HOME before resuming so garth knows where to find tokens
+                    os.environ['GARTH_HOME'] = user_session_dir
+                    # Configure garth to use our session directory
+                    garth.resume(user_session_dir)
+                    # Verify session is valid by checking username
+                    _ = garth.client.username
+                    # Create Garmin client without MFA prompt (session already exists)
+                    self.garmin_client = Garmin(email, password)
+                    self.garmin_client.login()
+                    logger.info("Successfully logged in using saved garth session")
                     self.update_status("Logged in using saved session", "green")
+                    self.update_login_status(True)
                     return True
-                except TypeError:
-                    # session_dir not supported
-                    self.garmin_client = None
-                    logger.warning("session_dir parameter not supported by garminconnect library")
-                    return False
-                except Exception:
+                except Exception as e:
                     # Session failed, fall back to credentials
                     self.garmin_client = None
-                    logger.warning("Session login failed, will use credentials")
+                    logger.warning(f"Garth session login failed, will use credentials: {str(e)}")
                     pass
         except Exception as e:
             self.garmin_client = None
@@ -485,12 +524,20 @@ class ConnectUploaderGUI:
         ttk.Label(main_frame, text="Email:").grid(row=2, column=0, sticky=tk.W, pady=5)
         self.garmin_email = ttk.Entry(main_frame, width=35)
         self.garmin_email.grid(row=2, column=1, sticky=tk.W, pady=5, padx=5)
-        self.garmin_email.bind('<KeyRelease>', lambda e: self.mark_settings_changed())
+        self.garmin_email.bind('<KeyRelease>', lambda e: self.on_credentials_changed())
         
         ttk.Label(main_frame, text="Password:").grid(row=3, column=0, sticky=tk.W, pady=5)
         self.garmin_password = ttk.Entry(main_frame, show="*", width=35)
         self.garmin_password.grid(row=3, column=1, sticky=tk.W, pady=5, padx=5)
-        self.garmin_password.bind('<KeyRelease>', lambda e: self.mark_settings_changed())
+        self.garmin_password.bind('<KeyRelease>', lambda e: self.on_credentials_changed())
+        
+        # Test Connection button and login status indicator
+        test_btn = ttk.Button(main_frame, text="Test & Login", command=self.test_garmin_connection)
+        test_btn.grid(row=3, column=2, sticky=tk.W, pady=5, padx=5)
+        
+        # Login status indicator (initially hidden)
+        self.login_status_label = ttk.Label(main_frame, text="", foreground="green", font=('Segoe UI', 9))
+        self.login_status_label.grid(row=2, column=2, sticky=tk.W, pady=5, padx=5)
         
         # Folder Settings
         ttk.Label(main_frame, text="📁 Folder Settings", style='Header.TLabel').grid(row=4, column=0, columnspan=3, sticky=tk.W, pady=(20, 5))
@@ -1215,10 +1262,25 @@ You can select and copy text from this window!"""
             pass
     
     def save_settings(self):
-        # Validate Garmin credentials if they've been entered
-        if self.garmin_email.get() and self.garmin_password.get():
-            if not self.validate_garmin_credentials():
-                return  # Don't save if validation fails
+        # Check if Garmin credentials have changed
+        old_email = self.config.get('garmin_email', '')
+        old_password = self.config.get('garmin_password', '')
+        new_email = self.garmin_email.get()
+        new_password = self.garmin_password.get()
+        
+        credentials_changed = (new_email != old_email or new_password != old_password)
+        
+        # Only validate if credentials have changed AND we're not already logged in
+        if credentials_changed and new_email and new_password and not self.is_logged_in:
+            response = messagebox.askyesno(
+                "Test Garmin Credentials?",
+                "Your Garmin credentials have changed.\n\n"
+                "Would you like to test the connection now?\n\n"
+                "(If you have MFA enabled, you'll be prompted for your verification code)"
+            )
+            if response:
+                if not self.validate_garmin_credentials():
+                    return  # Don't save if validation fails
         
         self.config = self.save_config()
         self.check_interval = self.interval_var.get() * 60  # Update interval in seconds
@@ -1227,8 +1289,22 @@ You can select and copy text from this window!"""
         messagebox.showinfo("Settings Saved", "Your settings have been saved successfully!")
         self.update_status("Settings saved", "green")
     
+    def test_garmin_connection(self):
+        """Test Garmin connection manually (called by Test Connection button)"""
+        email = self.garmin_email.get()
+        password = self.garmin_password.get()
+        
+        if not email or not password:
+            messagebox.showwarning(
+                "Missing Credentials",
+                "Please enter both email and password before testing the connection."
+            )
+            return
+        
+        self.validate_garmin_credentials()
+    
     def validate_garmin_credentials(self):
-        """Test Garmin credentials to ensure they're valid"""
+        """Test Garmin credentials to ensure they're valid (with MFA support)"""
         email = self.garmin_email.get()
         password = self.garmin_password.get()
         
@@ -1240,32 +1316,81 @@ You can select and copy text from this window!"""
         logger.info(f"Validating Garmin credentials for: {email}")
         
         try:
-            # Test login in background thread to avoid blocking UI
             # Create temporary session directory for validation
             temp_session_dir = os.path.join(tempfile.gettempdir(), f"garmin_validate_{email.replace('@', '_').replace('.', '_')}")
-            # Try to create client with session_dir if supported
-            try:
-                test_client = Garmin(email, password, session_dir=temp_session_dir)
-            except TypeError:
-                # session_dir not supported, create without it
-                test_client = Garmin(email, password)
+            os.makedirs(temp_session_dir, exist_ok=True)
+            
+            # Set GARTH_HOME environment variable for temp session
+            os.environ['GARTH_HOME'] = temp_session_dir
+            
+            # Use Garmin's built-in MFA support
+            logger.info("Validating with Garmin (supports MFA)...")
+            test_client = Garmin(email, password, prompt_mfa=self.prompt_mfa_code)
             test_client.login()
+            
             log_success("Garmin credentials validated successfully")
             messagebox.showinfo("Credentials Valid", "✅ Garmin credentials are valid!")
             self.update_status("Garmin credentials validated", "green")
+            self.update_login_status(True)
+            
+            # Clean up temp session
+            try:
+                shutil.rmtree(temp_session_dir)
+            except Exception:
+                pass
+            
             return True
         except Exception as e:
-            logger.error(f"Garmin credential validation failed: {str(e)}")
-            messagebox.showerror(
-                "Invalid Credentials",
-                f"❌ Could not login to Garmin Connect.\n\nError: {str(e)}\n\nPlease check your email and password."
-            )
-            self.update_status("Garmin login failed", "red")
+            error_msg = str(e)
+            logger.error(f"Garmin credential validation failed: {error_msg}")
+            
+            # Check for rate limiting (429 error)
+            if "429" in error_msg or "Too Many Requests" in error_msg:
+                self.update_status("Rate limited by Garmin", "red")
+                messagebox.showwarning(
+                    "Garmin Rate Limit",
+                    "🕒 Too Many Login Attempts\n\n"
+                    "Garmin has temporarily blocked your account from logging in.\n\n"
+                    "What to do:\n"
+                    "• Wait 15-30 minutes\n"
+                    "• Then try logging in again\n\n"
+                    "This is a temporary security measure by Garmin."
+                )
+            else:
+                # Other login errors
+                self.update_status("Garmin login failed", "red")
+                messagebox.showerror(
+                    "Login Failed",
+                    f"❌ Could not login to Garmin Connect.\n\n"
+                    f"Please check your email and password.\n\n"
+                    f"If the problem persists, check the log for details."
+                )
             return False
+    
+    def on_credentials_changed(self):
+        """Called when Garmin credentials are modified"""
+        self.mark_settings_changed()
+        # Clear login state when credentials change
+        self.clear_login_status()
     
     def mark_settings_changed(self):
         """Mark that settings have been modified"""
         self.settings_changed = True
+    
+    def update_login_status(self, logged_in=True):
+        """Update the visual login status indicator"""
+        self.is_logged_in = logged_in
+        if logged_in:
+            self.login_status_label.config(text="✓ Logged in", foreground="green")
+            logger.info("Garmin login status: Logged in")
+        else:
+            self.login_status_label.config(text="", foreground="gray")
+    
+    def clear_login_status(self):
+        """Clear login status when credentials change"""
+        self.is_logged_in = False
+        self.login_status_label.config(text="", foreground="gray")
+        logger.debug("Login status cleared due to credential change")
     
     def _maybe_log_upload_day_marker(self):
         """Write a day separator to the uploads log when the day changes"""
@@ -1526,33 +1651,56 @@ You can select and copy text from this window!"""
         return True
     
     def login_garmin_with_retry(self, max_retries=3, delay=2):
-        """Login to Garmin with retry mechanism and rate limiting"""
+        """Login to Garmin with retry mechanism, MFA support, and rate limiting"""
         for attempt in range(max_retries):
             try:
                 self.update_status(f"Logging into Garmin (attempt {attempt + 1}/{max_retries})...", "orange")
                 logger.info(f"Attempting Garmin login, attempt {attempt + 1}/{max_retries}")
                 
-                # Get email for session directory
+                # Get credentials
                 email = self.garmin_email.get()
+                password = self.garmin_password.get()
                 if not email:
                     email = self.config.get('garmin_email', '')
+                if not password:
+                    password = self.config.get('garmin_password', '')
                 
                 # Create session directory specific to this user
                 user_session_dir = os.path.join(self.session_dir, email.replace('@', '_').replace('.', '_'))
+                os.makedirs(user_session_dir, exist_ok=True)
                 
-                # Try to create client with session_dir if supported
-                try:
-                    self.garmin_client = Garmin(self.garmin_email.get(), self.garmin_password.get(), session_dir=user_session_dir)
-                except TypeError:
-                    # session_dir not supported, create without it
-                    self.garmin_client = Garmin(self.garmin_email.get(), self.garmin_password.get())
+                # Set GARTH_HOME environment variable so garth saves tokens to our directory
+                os.environ['GARTH_HOME'] = user_session_dir
                 
+                # Use Garmin's built-in MFA support (it handles garth internally)
+                logger.info("Authenticating with Garmin (supports MFA)...")
+                self.garmin_client = Garmin(email, password, prompt_mfa=self.prompt_mfa_code)
                 self.garmin_client.login()
+                logger.info("Garmin login successful, session saved")
+                
                 log_success("Garmin login successful")
                 self.update_status("Logged into Garmin successfully", "green")
+                self.update_login_status(True)
                 return True
             except Exception as e:
-                logger.error(f"Garmin login attempt {attempt + 1} failed: {str(e)}")
+                error_msg = str(e)
+                logger.error(f"Garmin login attempt {attempt + 1} failed: {error_msg}")
+                
+                # Check for rate limiting (429 error)
+                if "429" in error_msg or "Too Many Requests" in error_msg:
+                    logger.error("Rate limited by Garmin - too many login attempts")
+                    self.update_status("Rate limited by Garmin", "red")
+                    messagebox.showwarning(
+                        "Garmin Rate Limit",
+                        "🕒 Too Many Login Attempts\n\n"
+                        "Garmin has temporarily blocked your account from logging in.\n\n"
+                        "What to do:\n"
+                        "• Wait 15-30 minutes\n"
+                        "• Then try logging in again\n\n"
+                        "This is a temporary security measure by Garmin."
+                    )
+                    return False
+                
                 if attempt < max_retries - 1:
                     logger.info(f"Waiting {delay} seconds before retry...")
                     time.sleep(delay)
@@ -1560,9 +1708,22 @@ You can select and copy text from this window!"""
                     delay *= 2  # Exponential backoff
                 else:
                     logger.error("All login attempts failed")
-                    self.update_status(f"Garmin login failed: {str(e)}", "red")
-                    messagebox.showerror("Login Failed", f"Could not login to Garmin after {max_retries} attempts:\n{str(e)}")
+                    self.update_status(f"Garmin login failed: {error_msg}", "red")
+                    messagebox.showerror("Login Failed", f"Could not login to Garmin after {max_retries} attempts:\n{error_msg}")
         return False
+    
+    def is_garmin_logged_in(self):
+        """Check if we have a valid Garmin session without triggering login/MFA"""
+        if not self.garmin_client:
+            return False
+        
+        try:
+            # Quick check - try to get user profile
+            self.garmin_client.get_user_profile()
+            return True
+        except Exception as e:
+            logger.debug(f"Garmin session check failed: {str(e)}")
+            return False
     
     def login_garmin(self):
         """Wrapper method that calls the retry version"""
@@ -1579,24 +1740,43 @@ You can select and copy text from this window!"""
     def _sync_files(self):
         self.sync_button.config(state='disabled')
         
-        # Try to login with session first, then credentials if needed
-        if not self.garmin_client:
-            # First try to use saved session
-            if not self.try_session_login():
-                # If session login failed, try credentials
-                if not self.login_garmin():
-                    self.sync_button.config(state='normal')
-                    return
+        # Check if we're running in background (window hidden/withdrawn)
+        is_background = self.root.state() == 'withdrawn'
+        
+        # Check if we're already logged in and session is valid
+        if self.is_logged_in and self.garmin_client and self.is_garmin_logged_in():
+            logger.debug("Already logged in, reusing existing session")
         else:
-            # Client exists but session may have expired; verify it
-            try:
-                self.garmin_client.get_user_profile()
-            except Exception:
-                logger.warning("Existing Garmin session expired, re-authenticating")
-                self.garmin_client = None
-                if not self.login_garmin():
-                    self.sync_button.config(state='normal')
-                    return
+            # Need to login - try session first, then credentials if needed
+            if not self.garmin_client:
+                # First try to use saved session (doesn't trigger MFA)
+                if not self.try_session_login():
+                    # If session login failed and we're in background, skip login attempt
+                    if is_background:
+                        logger.warning("Garmin login required but app is in background - skipping sync")
+                        self.update_status("Login required - please open app", "orange")
+                        self.sync_button.config(state='normal')
+                        return
+                    # If we're in foreground, try credentials (may trigger MFA)
+                    if not self.login_garmin():
+                        self.sync_button.config(state='normal')
+                        return
+            else:
+                # Client exists but session may have expired; verify it
+                if not self.is_garmin_logged_in():
+                    logger.warning("Existing Garmin session expired")
+                    self.garmin_client = None
+                    self.update_login_status(False)
+                    # If in background, skip re-authentication
+                    if is_background:
+                        logger.warning("Re-authentication required but app is in background - skipping sync")
+                        self.update_status("Login required - please open app", "orange")
+                        self.sync_button.config(state='normal')
+                        return
+                    # If in foreground, try to re-authenticate
+                    if not self.login_garmin():
+                        self.sync_button.config(state='normal')
+                        return
         
         uploaded_count = 0
         last_uploaded_file = None
@@ -1813,10 +1993,21 @@ You can select and copy text from this window!"""
         if not self.validate_settings():
             return
         
-        if not self.garmin_client:
+        # Check if we're already logged in and session is valid
+        if self.is_logged_in and self.garmin_client and self.is_garmin_logged_in():
+            logger.debug("Already logged in, starting monitoring with existing session")
+        elif not self.garmin_client:
             # First try to use saved session
             if not self.try_session_login():
                 # If session login failed, try credentials
+                if not self.login_garmin():
+                    return
+        else:
+            # Client exists but may be invalid
+            if not self.is_garmin_logged_in():
+                logger.warning("Existing session expired, re-authenticating")
+                self.garmin_client = None
+                self.update_login_status(False)
                 if not self.login_garmin():
                     return
         
@@ -1870,14 +2061,8 @@ You can select and copy text from this window!"""
                 "To minimize to tray, Auto-Sync should be running.\n\nWould you like to start Auto-Sync now?"
             )
             if response:
-                # Try to start monitoring first
-                if self.validate_settings():
-                    if not self.garmin_client:
-                        if not self.login_garmin():
-                            return
-                    self.start_monitoring()
-                else:
-                    return
+                # Start monitoring (which handles login if needed)
+                self.start_monitoring()
             else:
                 messagebox.showinfo(
                     "Minimize to Tray",
