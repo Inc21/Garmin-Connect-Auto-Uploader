@@ -21,7 +21,6 @@ import logging
 import base64
 import tempfile
 from garminconnect import Garmin
-import garth
 from PIL import Image, ImageTk
 from pystray import Icon, Menu, MenuItem
 import webbrowser
@@ -369,7 +368,7 @@ class ConnectUploaderGUI:
         return mfa_code.get().strip()
     
     def try_session_login(self):
-        """Try to login using saved garth session tokens"""
+        """Try to login using saved session tokens (garminconnect 0.3.1 API)"""
         try:
             email = self.garmin_email.get() if self.garmin_email else self.config.get('garmin_email', '')
             password = self.garmin_password.get() if self.garmin_password else self.config.get('garmin_password', '')
@@ -380,30 +379,24 @@ class ConnectUploaderGUI:
             # Create session directory specific to this user
             user_session_dir = os.path.join(self.session_dir, email.replace('@', '_').replace('.', '_'))
             
-            # Try to resume garth session
-            if os.path.exists(user_session_dir) and os.listdir(user_session_dir):
+            # Try to resume session using saved tokens
+            if os.path.exists(user_session_dir):
                 try:
-                    # Set GARTH_HOME before resuming so garth knows where to find tokens
-                    os.environ['GARTH_HOME'] = user_session_dir
-                    # Configure garth to use our session directory
-                    garth.resume(user_session_dir)
-                    # Verify session is valid by checking username
-                    _ = garth.client.username
-                    # Create Garmin client without MFA prompt (session already exists)
-                    self.garmin_client = Garmin(email, password)
-                    self.garmin_client.login()
-                    logger.info("Successfully logged in using saved garth session")
+                    # Create Garmin client and try to login with saved tokens
+                    self.garmin_client = Garmin()
+                    self.garmin_client.login(user_session_dir)
+                    logger.info("Successfully resumed session using saved tokens (no login required)")
                     self.update_status("Logged in using saved session", "green")
                     self.update_login_status(True)
                     return True
                 except Exception as e:
                     # Session failed, fall back to credentials
                     self.garmin_client = None
-                    logger.warning(f"Garth session login failed, will use credentials: {str(e)}")
+                    logger.warning(f"Session login failed, will use credentials: {str(e)}")
                     pass
         except Exception as e:
             self.garmin_client = None
-            logger.warning(f"Session login failed, will use credentials: {str(e)}")
+            logger.warning(f"Session login failed: {str(e)}")
             pass
             
         return False
@@ -1316,28 +1309,21 @@ You can select and copy text from this window!"""
         logger.info(f"Validating Garmin credentials for: {email}")
         
         try:
-            # Create temporary session directory for validation
-            temp_session_dir = os.path.join(tempfile.gettempdir(), f"garmin_validate_{email.replace('@', '_').replace('.', '_')}")
-            os.makedirs(temp_session_dir, exist_ok=True)
+            # Create session directory for this user
+            user_session_dir = os.path.join(self.session_dir, email.replace('@', '_').replace('.', '_'))
+            os.makedirs(user_session_dir, exist_ok=True)
             
-            # Set GARTH_HOME environment variable for temp session
-            os.environ['GARTH_HOME'] = temp_session_dir
-            
-            # Use Garmin's built-in MFA support
+            # Use new garminconnect 0.3.1 API with MFA support
             logger.info("Validating with Garmin (supports MFA)...")
-            test_client = Garmin(email, password, prompt_mfa=self.prompt_mfa_code)
-            test_client.login()
+            self.garmin_client = Garmin(email=email, password=password, prompt_mfa=self.prompt_mfa_code)
+            self.garmin_client.login(user_session_dir)
             
             log_success("Garmin credentials validated successfully")
             messagebox.showinfo("Credentials Valid", "✅ Garmin credentials are valid!")
             self.update_status("Garmin credentials validated", "green")
             self.update_login_status(True)
-            
-            # Clean up temp session
-            try:
-                shutil.rmtree(temp_session_dir)
-            except Exception:
-                pass
+            logger.info(f"Tokens saved to: {user_session_dir}")
+            logger.info("Garmin client ready for reuse")
             
             return True
         except Exception as e:
@@ -1650,12 +1636,12 @@ You can select and copy text from this window!"""
         self._update_app_status_icons()
         return True
     
-    def login_garmin_with_retry(self, max_retries=3, delay=2):
-        """Login to Garmin with retry mechanism, MFA support, and rate limiting"""
+    def login_garmin_with_retry(self, max_retries=1, delay=2):
+        """Login to Garmin with MFA support (single attempt to avoid rate limiting)"""
         for attempt in range(max_retries):
             try:
-                self.update_status(f"Logging into Garmin (attempt {attempt + 1}/{max_retries})...", "orange")
-                logger.info(f"Attempting Garmin login, attempt {attempt + 1}/{max_retries}")
+                self.update_status(f"Logging into Garmin...", "orange")
+                logger.info(f"Attempting Garmin login")
                 
                 # Get credentials
                 email = self.garmin_email.get()
@@ -1669,14 +1655,11 @@ You can select and copy text from this window!"""
                 user_session_dir = os.path.join(self.session_dir, email.replace('@', '_').replace('.', '_'))
                 os.makedirs(user_session_dir, exist_ok=True)
                 
-                # Set GARTH_HOME environment variable so garth saves tokens to our directory
-                os.environ['GARTH_HOME'] = user_session_dir
-                
-                # Use Garmin's built-in MFA support (it handles garth internally)
+                # Use new garminconnect 0.3.1 API with MFA support
                 logger.info("Authenticating with Garmin (supports MFA)...")
-                self.garmin_client = Garmin(email, password, prompt_mfa=self.prompt_mfa_code)
-                self.garmin_client.login()
-                logger.info("Garmin login successful, session saved")
+                self.garmin_client = Garmin(email=email, password=password, prompt_mfa=self.prompt_mfa_code)
+                self.garmin_client.login(user_session_dir)
+                logger.info("Garmin login successful, tokens saved")
                 
                 log_success("Garmin login successful")
                 self.update_status("Logged into Garmin successfully", "green")
@@ -1786,23 +1769,38 @@ You can select and copy text from this window!"""
         mywhoosh_folder = self.mywhoosh_folder.get().strip()
         trainerday_folder = self.trainerday_folder.get().strip() if hasattr(self, 'trainerday_folder') else ""
 
+        # Take a snapshot of activities BEFORE processing any files
+        # This is used for TrainerDay title mapping to identify which activity was just uploaded
+        pre_sync_activity_ids = None
+        if trainerday_folder and os.path.isdir(trainerday_folder):
+            try:
+                pre_activities = self.garmin_client.get_activities(0, 20)
+                pre_sync_activity_ids = {
+                    a["activityId"]
+                    for a in pre_activities
+                    if isinstance(a, dict) and "activityId" in a
+                }
+                logger.info(f"Captured pre-sync activity snapshot: {len(pre_sync_activity_ids)} activities")
+            except Exception as pre_err:
+                log_warning(f"Could not capture pre-sync activities for TrainerDay title mapping: {pre_err}")
+
         # Sync Wahoo files (only if folder exists)
         if wahoo_folder and os.path.isdir(wahoo_folder):
-            count, last_file = self._process_folder(wahoo_folder, "Wahoo")
+            count, last_file = self._process_folder(wahoo_folder, "Wahoo", pre_sync_activity_ids)
             uploaded_count += count
             if last_file:
                 last_uploaded_file = last_file
 
         # Sync MyWhoosh files (only if folder exists)
         if mywhoosh_folder and os.path.isdir(mywhoosh_folder):
-            count, last_file = self._process_folder(mywhoosh_folder, "MyWhoosh")
+            count, last_file = self._process_folder(mywhoosh_folder, "MyWhoosh", pre_sync_activity_ids)
             uploaded_count += count
             if last_file:
                 last_uploaded_file = last_file
 
         # Sync TrainerDay files (only if folder exists)
         if trainerday_folder and os.path.isdir(trainerday_folder):
-            count, last_file = self._process_folder(trainerday_folder, "TrainerDay")
+            count, last_file = self._process_folder(trainerday_folder, "TrainerDay", pre_sync_activity_ids)
             uploaded_count += count
             if last_file:
                 last_uploaded_file = last_file
@@ -1826,7 +1824,7 @@ You can select and copy text from this window!"""
         
         self.sync_button.config(state='normal')
     
-    def _process_folder(self, folder, source_name):
+    def _process_folder(self, folder, source_name, pre_sync_activity_ids=None):
         uploaded = 0
         last_uploaded_file = None
         uploaded_folder = os.path.join(folder, "uploaded")
@@ -1862,22 +1860,6 @@ You can select and copy text from this window!"""
                     try:
                         self._maybe_log_upload_day_marker()
 
-                        # For TrainerDay, capture a snapshot of recent activities so we can
-                        # identify which one was created by this upload.
-                        pre_upload_ids = None
-                        if source_name == "TrainerDay":
-                            try:
-                                pre_activities = self.garmin_client.get_activities(0, 10)
-                                pre_upload_ids = {
-                                    a["activityId"]
-                                    for a in pre_activities
-                                    if isinstance(a, dict) and "activityId" in a
-                                }
-                            except Exception as pre_err:
-                                log_warning(
-                                    f"Could not fetch pre-upload activities for TrainerDay title mapping: {pre_err}"
-                                )
-
                         self.garmin_client.upload_activity(file_path)
 
                         # For TrainerDay uploads, try to set a friendly activity title
@@ -1890,28 +1872,41 @@ You can select and copy text from this window!"""
                                         activity_id = None
 
                                         # First try to find a new activity that appeared
-                                        # between the pre- and post-upload activity lists.
-                                        if pre_upload_ids is not None:
+                                        # between the pre-sync and post-upload activity lists.
+                                        if pre_sync_activity_ids is not None:
                                             try:
-                                                max_attempts = 5
-                                                delay_seconds = 3
+                                                max_attempts = 6
+                                                delay_seconds = 2
                                                 for attempt in range(max_attempts):
-                                                    post_activities = self.garmin_client.get_activities(0, 10)
+                                                    post_activities = self.garmin_client.get_activities(0, 20)
                                                     new_activities = [
                                                         a
                                                         for a in post_activities
                                                         if isinstance(a, dict)
                                                         and "activityId" in a
-                                                        and a["activityId"] not in pre_upload_ids
+                                                        and a["activityId"] not in pre_sync_activity_ids
                                                     ]
-                                                    if len(new_activities) == 1:
-                                                        activity_id = new_activities[0][
-                                                            "activityId"
-                                                        ]
+                                                    
+                                                    # Find the activity that matches this specific file
+                                                    # by checking if it was uploaded in the last few seconds
+                                                    matching_activity = None
+                                                    for activity in new_activities:
+                                                        # The activity we just uploaded should be the most recent one
+                                                        # that's not in the pre-sync snapshot
+                                                        if matching_activity is None:
+                                                            matching_activity = activity
+                                                        elif activity.get("startTimeGMT", 0) > matching_activity.get("startTimeGMT", 0):
+                                                            matching_activity = activity
+                                                    
+                                                    if matching_activity:
+                                                        activity_id = matching_activity["activityId"]
+                                                        logger.info(f"Found TrainerDay activity via diff: {activity_id} (attempt {attempt + 1})")
                                                         break
-                                                    # If we didn't see exactly one new activity yet,
+                                                    
+                                                    # If we didn't find a new activity yet,
                                                     # wait a bit and let Garmin finish processing.
                                                     if attempt < max_attempts - 1:
+                                                        logger.info(f"Waiting for Garmin to process TrainerDay activity (attempt {attempt + 1}/{max_attempts})...")
                                                         time.sleep(delay_seconds)
                                             except Exception as diff_err:
                                                 log_warning(
@@ -2487,12 +2482,22 @@ def main():
         try:
             # Load config to check if auto-sync should start
             if app.config.get('start_with_windows') and os.path.exists(CONFIG_FILE):
-                logger.info("Auto-start settings detected - starting monitoring and minimizing to tray")
-                # Start monitoring if credentials are set
-                if app.garmin_email.get() and app.garmin_password.get():
+                # Check if we have a valid session (logged in)
+                if app.is_logged_in and app.garmin_client:
+                    logger.info("Auto-start with valid session - starting monitoring and minimizing to tray")
                     root.after(500, lambda: app.start_monitoring() if not app.is_monitoring else None)
                     root.after(800, lambda: root.withdraw())
                     root.after(1000, lambda: app.create_tray_icon())
+                else:
+                    # No valid session - keep window open and prompt user to login
+                    logger.info("Auto-start without valid session - keeping window open for user login")
+                    app.update_status("Please click 'Test & Login' to authenticate with Garmin", "orange")
+                    messagebox.showinfo(
+                        "Garmin Login Required",
+                        "Welcome back!\n\n"
+                        "Please click the 'Test & Login' button to authenticate with Garmin Connect.\n\n"
+                        "After logging in, the app will auto-start silently on future reboots."
+                    )
         except Exception as e:
             logger.error(f"Error during startup auto-start: {str(e)}")
     

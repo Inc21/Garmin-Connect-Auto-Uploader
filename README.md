@@ -19,8 +19,9 @@ This app automatically syncs your workout files to Garmin Connect so your activi
 - ✅ Automatic background syncing
 - ✅ Starts with Windows (optional)
 - ✅ Secure password encryption
-- ✅ Two-Factor Authentication (MFA/2FA) support
-- ✅ Manual credential testing with "Test Connection" button
+- ✅ Two-Factor Authentication (MFA/2FA) support with Garmin's official mobile SSO
+- ✅ One-time MFA login with auto-refreshing tokens (no repeated authentication)
+- ✅ Visual login status indicator with "Test & Login" button
 - ✅ Detailed activity logging
 - ✅ System tray support
 
@@ -92,20 +93,26 @@ I built this originally as a personal Python script to solve my own manual uploa
 
 ## First Time Setup
 
-### Step 2: Enter Garmin Credentials
+### Step 2: Enter Garmin Credentials & Login
 
 1. Enter your **Garmin Connect email**
 2. Enter your **Garmin Connect password**
-3. Click **"Test Connection"** to verify your credentials (optional but recommended)
+3. Click **"Test & Login"** to authenticate with Garmin Connect
 4. Click **"Save Settings"** button
 
-**Two-Factor Authentication (MFA/2FA):**
-- If you have two-step verification enabled on your Garmin account, a dialog will pop up asking for your 6-digit verification code when you test the connection or first sync
-- Enter the code from your authenticator app or the code Garmin texts/emails you
-- Your authentication tokens are securely saved and automatically reused for approximately **one year**
-- You'll only need to enter the MFA code once per year (or when you change your password)
+**🔐 Authentication & Two-Factor (MFA/2FA):**
 
-**Important:** Your password is encrypted and stored in Windows Credential Manager. The app only validates credentials when they change, not every time you save settings.
+The app uses Garmin's official mobile SSO authentication (same as the Android app) for secure, reliable login:
+
+- **First login:** Click "Test & Login" to authenticate with Garmin
+- **MFA/2FA support:** If you have two-step verification enabled, a dialog will pop up asking for your 6-digit verification code
+  - Enter the code from your authenticator app or the code Garmin texts/emails you
+  - Authentication tokens are securely saved locally and **auto-refresh indefinitely**
+  - You'll only need to enter the MFA code **once** (unless you change your password or clear the app's session data)
+- **Visual confirmation:** A green checkmark (✓) and "Logged in" text appear when you have a valid session
+- **Persistent login:** Once logged in, the app automatically reuses your saved tokens - no need to re-authenticate on every startup or sync
+
+**Important:** Your password is encrypted and stored in Windows Credential Manager. The app only validates credentials when they change, not every time you save settings. Authentication tokens are stored in `%LOCALAPPDATA%\GarminUploader\session\` and are automatically managed by the app.
 
 ### Step 3: Configure Your Folders
 
