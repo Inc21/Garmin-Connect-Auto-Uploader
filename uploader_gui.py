@@ -20,11 +20,18 @@ import datetime
 import logging
 import base64
 import tempfile
+import xml.etree.ElementTree as ET
+import urllib.request
+import urllib.error
 from garminconnect import Garmin
 from PIL import Image, ImageTk
 from pystray import Icon, Menu, MenuItem
 import webbrowser
 import shutil
+try:
+    import fitdecode
+except ImportError:
+    fitdecode = None
 try:
     import keyring
 except ImportError:
@@ -108,6 +115,8 @@ WAHOO_LOGO_PATH = find_resource(os.path.join("assets", "wahoo.png"))
 MYWHOOSH_LOGO_PATH = find_resource(os.path.join("assets", "mywhoosh.png"))
 TRAINERDAY_LOGO_PATH = find_resource(os.path.join("assets", "trainerday.png"))
 VERSION = "1.0.7"
+GITHUB_REPO_URL = "https://github.com/Inc21/Wahoo-and-MyWhoos-to-Garmin-Conect-Auto-Uploader"
+VERSION_JSON_URL = "https://raw.githubusercontent.com/Inc21/Wahoo-and-MyWhoos-to-Garmin-Conect-Auto-Uploader/main/version.json"
 LOG_FILE = _resolve_existing_or_default("garmin_uploader.log", LOG_DIR)
 # Upload log (single file; month separators written when month changes)
 UPLOAD_LOG_FILE = _resolve_existing_or_default("garmin_uploads.log", LOG_DIR)
@@ -720,6 +729,25 @@ class ConnectUploaderGUI:
             font=('Arial', 8),
             foreground='gray',
         ).grid(row=1, column=0, columnspan=3, sticky=tk.W)
+
+        # Experimental spoof setting
+        self.experimental_edge_spoof = tk.BooleanVar(value=False)
+        experimental_frame = ttk.Frame(main_frame)
+        experimental_frame.grid(row=12, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(8, 2))
+
+        ttk.Checkbutton(
+            experimental_frame,
+            text="Experimental Garmin mode",
+            variable=self.experimental_edge_spoof,
+            command=self.mark_settings_changed,
+        ).pack(side='left', anchor='w')
+
+        ttk.Button(
+            experimental_frame,
+            text="i",
+            width=2,
+            command=self.show_experimental_spoof_info,
+        ).pack(side='left', padx=(6, 0))
         
         # Separator
         ttk.Separator(main_frame, orient='horizontal').grid(row=13, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=15)
@@ -747,13 +775,10 @@ class ConnectUploaderGUI:
         
         # Separator
         ttk.Separator(main_frame, orient='horizontal').grid(row=18, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=10)
-        
-        # Actions
-        ttk.Label(main_frame, text="▶️ Actions", style='Header.TLabel').grid(row=19, column=0, columnspan=3, sticky=tk.W, pady=(10, 5))
-        
-        # Action buttons in a frame, centered with equal width
+
+        # Primary action buttons
         btn_frame = ttk.Frame(main_frame)
-        btn_frame.grid(row=20, column=0, columnspan=3, pady=5)
+        btn_frame.grid(row=19, column=0, columnspan=3, pady=(4, 2))
         
         ttk.Button(btn_frame, text="Save Settings", command=self.save_settings).pack(side='left', padx=3)
         self.sync_button = ttk.Button(btn_frame, text="Sync Now", command=self.sync_now)
@@ -762,11 +787,15 @@ class ConnectUploaderGUI:
         self.monitor_button.pack(side='left', padx=3)
         self.minimize_button = ttk.Button(btn_frame, text="Minimize to Tray", command=self.minimize_to_tray)
         self.minimize_button.pack(side='left', padx=3)
-        ttk.Button(btn_frame, text="About", command=self.show_about).pack(side='left', padx=3)
+
+        # Secondary action row
+        about_frame = ttk.Frame(main_frame)
+        about_frame.grid(row=20, column=0, columnspan=3, pady=(0, 6))
+        ttk.Button(about_frame, text="About & update", command=self.show_about).pack()
         
         # Status
         self.status_label = ttk.Label(main_frame, text="Status: Idle", foreground='blue', font=('Arial', 9))
-        self.status_label.grid(row=21, column=0, columnspan=3, pady=(10, 0))
+        self.status_label.grid(row=21, column=0, columnspan=3, pady=(6, 0))
         
         # Last sync time
         self.last_sync_label = ttk.Label(main_frame, text="Last sync: Never", foreground='gray', font=('Arial', 8))
@@ -1109,8 +1138,239 @@ You can select and copy text from this window!"""
         if folder:
             entry_widget.delete(0, tk.END)
             entry_widget.insert(0, folder)
-            self.mark_settings_changed()
-            self._update_app_status_icons()
+
+    def show_experimental_spoof_info(self):
+        info_text = (
+            "Best-effort Garmin-compatible upload mode. "
+            "Activities are saved as Edge 530 recordings and count toward challenges. "
+            "Garmin training load and advanced metrics can take time to calculate and are not "
+            "guaranteed to be calculated at all for your workout."
+        )
+        messagebox.showinfo("Experimental Garmin Mode", info_text)
+
+    def _modify_tcx_for_garmin_device(self, input_path, output_path):
+        """Best-effort TCX metadata rewrite so Garmin sees Garmin-like device fields."""
+        try:
+            tree = ET.parse(input_path)
+            root = tree.getroot()
+            if not root.tag.startswith("{"):
+                return False
+
+            tcx_ns = root.tag[1:].split("}")[0]
+            xsi_ns = "http://www.w3.org/2001/XMLSchema-instance"
+            ET.register_namespace('', tcx_ns)
+            ET.register_namespace('xsi', xsi_ns)
+
+            for activity in root.findall('.//{*}Activity'):
+                creator = activity.find('{*}Creator')
+                if creator is None:
+                    creator = ET.SubElement(activity, f'{{{tcx_ns}}}Creator')
+
+                creator.attrib[f'{{{xsi_ns}}}type'] = 'Device_t'
+                creator.clear()
+                creator.attrib[f'{{{xsi_ns}}}type'] = 'Device_t'
+
+                ET.SubElement(creator, f'{{{tcx_ns}}}Name').text = 'Garmin Edge 530'
+                ET.SubElement(creator, f'{{{tcx_ns}}}UnitId').text = '1234567890'
+                ET.SubElement(creator, f'{{{tcx_ns}}}ProductID').text = '3121'
+                version = ET.SubElement(creator, f'{{{tcx_ns}}}Version')
+                ET.SubElement(version, f'{{{tcx_ns}}}VersionMajor').text = '17'
+                ET.SubElement(version, f'{{{tcx_ns}}}VersionMinor').text = '0'
+                ET.SubElement(version, f'{{{tcx_ns}}}BuildMajor').text = '0'
+                ET.SubElement(version, f'{{{tcx_ns}}}BuildMinor').text = '0'
+
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            tree.write(output_path, encoding='utf-8', xml_declaration=True)
+            return True
+        except Exception as e:
+            log_warning(f"Experimental TCX device rewrite failed for {os.path.basename(input_path)}: {e}")
+            return False
+
+    def _format_tcx_timestamp(self, value):
+        if isinstance(value, datetime.datetime):
+            if value.tzinfo is None:
+                return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+            return value.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return str(value)
+
+    def _semicircles_to_degrees(self, value):
+        return float(value) * (180.0 / 2147483648.0)
+
+    def _convert_fit_to_device_tcx(self, input_path, output_path):
+        """Convert FIT to Garmin-like TCX and inject device metadata."""
+        if fitdecode is None:
+            log_warning("Experimental FIT spoof requires 'fitdecode' package, but it is not available.")
+            return False
+
+        try:
+            records = []
+            sport_name = "Biking"
+            total_time = None
+            total_distance = None
+            total_calories = None
+
+            with fitdecode.FitReader(input_path) as fit:
+                for frame in fit:
+                    if not isinstance(frame, fitdecode.FitDataMessage):
+                        continue
+
+                    values = {f.name: f.value for f in frame.fields if getattr(f, 'name', None)}
+
+                    if frame.name == "session":
+                        fit_sport = values.get("sport")
+                        if fit_sport:
+                            fit_sport_text = str(fit_sport).lower()
+                            sport_name = "Biking" if "cycl" in fit_sport_text or "bike" in fit_sport_text else "Other"
+                        total_time = values.get("total_elapsed_time") or total_time
+                        total_distance = values.get("total_distance") or total_distance
+                        total_calories = values.get("total_calories") or total_calories
+
+                    elif frame.name == "record":
+                        timestamp = values.get("timestamp")
+                        if timestamp is None:
+                            continue
+
+                        record = {"time": timestamp}
+                        if values.get("position_lat") is not None and values.get("position_long") is not None:
+                            record["lat"] = self._semicircles_to_degrees(values.get("position_lat"))
+                            record["lon"] = self._semicircles_to_degrees(values.get("position_long"))
+                        if values.get("altitude") is not None:
+                            record["altitude"] = float(values.get("altitude"))
+                        if values.get("distance") is not None:
+                            record["distance"] = float(values.get("distance"))
+                        if values.get("heart_rate") is not None:
+                            record["heart_rate"] = int(values.get("heart_rate"))
+                        if values.get("cadence") is not None:
+                            record["cadence"] = int(values.get("cadence"))
+                        if values.get("speed") is not None:
+                            record["speed"] = float(values.get("speed"))
+                        if values.get("power") is not None:
+                            record["power"] = int(values.get("power"))
+                        records.append(record)
+
+            if not records:
+                return False
+
+            tcx_ns = "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"
+            xsi_ns = "http://www.w3.org/2001/XMLSchema-instance"
+            ns3 = "http://www.garmin.com/xmlschemas/ActivityExtension/v2"
+            ET.register_namespace('', tcx_ns)
+            ET.register_namespace('xsi', xsi_ns)
+            ET.register_namespace('ae', ns3)
+
+            root = ET.Element(f"{{{tcx_ns}}}TrainingCenterDatabase")
+            activities = ET.SubElement(root, f"{{{tcx_ns}}}Activities")
+            activity = ET.SubElement(activities, f"{{{tcx_ns}}}Activity", Sport=sport_name)
+
+            start_time = records[0]["time"]
+            end_time = records[-1]["time"]
+            ET.SubElement(activity, f"{{{tcx_ns}}}Id").text = self._format_tcx_timestamp(start_time)
+
+            lap = ET.SubElement(activity, f"{{{tcx_ns}}}Lap", StartTime=self._format_tcx_timestamp(start_time))
+
+            if total_time is None and isinstance(start_time, datetime.datetime) and isinstance(end_time, datetime.datetime):
+                total_time = max(0.0, (end_time - start_time).total_seconds())
+            if total_distance is None:
+                total_distance = records[-1].get("distance", 0.0)
+            if total_calories is None:
+                total_calories = 0
+
+            ET.SubElement(lap, f"{{{tcx_ns}}}TotalTimeSeconds").text = f"{float(total_time or 0.0):.1f}"
+            ET.SubElement(lap, f"{{{tcx_ns}}}DistanceMeters").text = f"{float(total_distance or 0.0):.2f}"
+            ET.SubElement(lap, f"{{{tcx_ns}}}MaximumSpeed").text = f"{max((r.get('speed', 0.0) for r in records), default=0.0):.3f}"
+            ET.SubElement(lap, f"{{{tcx_ns}}}Calories").text = str(int(total_calories or 0))
+            ET.SubElement(lap, f"{{{tcx_ns}}}Intensity").text = "Active"
+            ET.SubElement(lap, f"{{{tcx_ns}}}TriggerMethod").text = "Manual"
+
+            track = ET.SubElement(lap, f"{{{tcx_ns}}}Track")
+            for rec in records:
+                tp = ET.SubElement(track, f"{{{tcx_ns}}}Trackpoint")
+                ET.SubElement(tp, f"{{{tcx_ns}}}Time").text = self._format_tcx_timestamp(rec["time"])
+
+                if "lat" in rec and "lon" in rec:
+                    pos = ET.SubElement(tp, f"{{{tcx_ns}}}Position")
+                    ET.SubElement(pos, f"{{{tcx_ns}}}LatitudeDegrees").text = f"{rec['lat']:.8f}"
+                    ET.SubElement(pos, f"{{{tcx_ns}}}LongitudeDegrees").text = f"{rec['lon']:.8f}"
+
+                if "altitude" in rec:
+                    ET.SubElement(tp, f"{{{tcx_ns}}}AltitudeMeters").text = f"{rec['altitude']:.2f}"
+                if "distance" in rec:
+                    ET.SubElement(tp, f"{{{tcx_ns}}}DistanceMeters").text = f"{rec['distance']:.2f}"
+                if "heart_rate" in rec:
+                    hr = ET.SubElement(tp, f"{{{tcx_ns}}}HeartRateBpm")
+                    ET.SubElement(hr, f"{{{tcx_ns}}}Value").text = str(rec['heart_rate'])
+                if "cadence" in rec:
+                    ET.SubElement(tp, f"{{{tcx_ns}}}Cadence").text = str(rec['cadence'])
+
+                if "speed" in rec or "power" in rec:
+                    ext = ET.SubElement(tp, f"{{{tcx_ns}}}Extensions")
+                    tpx = ET.SubElement(ext, f"{{{ns3}}}TPX")
+                    if "speed" in rec:
+                        ET.SubElement(tpx, f"{{{ns3}}}Speed").text = f"{rec['speed']:.3f}"
+                    if "power" in rec:
+                        ET.SubElement(tpx, f"{{{ns3}}}Watts").text = str(rec['power'])
+
+            creator = ET.SubElement(activity, f"{{{tcx_ns}}}Creator")
+            creator.attrib[f"{{{xsi_ns}}}type"] = "Device_t"
+            ET.SubElement(creator, f"{{{tcx_ns}}}Name").text = "Garmin Edge 530"
+            ET.SubElement(creator, f"{{{tcx_ns}}}UnitId").text = "1234567890"
+            ET.SubElement(creator, f"{{{tcx_ns}}}ProductID").text = "3121"
+            version = ET.SubElement(creator, f"{{{tcx_ns}}}Version")
+            ET.SubElement(version, f"{{{tcx_ns}}}VersionMajor").text = "17"
+            ET.SubElement(version, f"{{{tcx_ns}}}VersionMinor").text = "0"
+            ET.SubElement(version, f"{{{tcx_ns}}}BuildMajor").text = "0"
+            ET.SubElement(version, f"{{{tcx_ns}}}BuildMinor").text = "0"
+
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            ET.ElementTree(root).write(output_path, encoding='utf-8', xml_declaration=True)
+            return True
+        except Exception as e:
+            log_warning(f"Experimental FIT->TCX conversion failed for {os.path.basename(input_path)}: {e}")
+            return False
+
+    def _build_modified_workout_copy(self, file_path, source_name, modified_folder):
+        """Create modified copy for experimental device spoof mode.
+
+        Returns: (path_to_upload, spoof_applied, spoof_mode)
+        spoof_mode: fit_to_tcx | tcx_modified | passthrough_original
+        """
+        filename = os.path.basename(file_path)
+        stem, ext = os.path.splitext(filename)
+        ext = ext.lower()
+        modified_path = os.path.join(modified_folder, f"{stem}_spoofed{ext}")
+
+        os.makedirs(modified_folder, exist_ok=True)
+
+        if ext == '.fit':
+            converted_path = os.path.join(modified_folder, f"{stem}_spoofed.tcx")
+            max_attempts = 2
+            for attempt in range(1, max_attempts + 1):
+                spoof_applied = self._convert_fit_to_device_tcx(file_path, converted_path)
+                if spoof_applied:
+                    if attempt > 1:
+                        log_info(f"Experimental spoof succeeded on retry {attempt} for {filename}")
+                    return converted_path, True, "fit_to_tcx"
+                if attempt < max_attempts:
+                    log_warning(f"Experimental spoof retrying FIT conversion ({attempt}/{max_attempts}) for {filename}")
+                    time.sleep(1)
+
+        if ext == '.tcx':
+            max_attempts = 2
+            for attempt in range(1, max_attempts + 1):
+                spoof_applied = self._modify_tcx_for_garmin_device(file_path, modified_path)
+                if spoof_applied:
+                    if attempt > 1:
+                        log_info(f"Experimental spoof succeeded on retry {attempt} for {filename}")
+                    return modified_path, True, "tcx_modified"
+                if attempt < max_attempts:
+                    log_warning(f"Experimental spoof retrying TCX modification ({attempt}/{max_attempts}) for {filename}")
+                    time.sleep(1)
+
+        log_warning(
+            f"Experimental spoof could not modify/convert {filename} after retries. "
+            "Uploading original file unchanged."
+        )
+        return file_path, False, "passthrough_original"
     
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -1126,7 +1386,8 @@ You can select and copy text from this window!"""
             'mywhoosh_folder': '',
             'trainerday_folder': '',
             'start_with_windows': False,
-            'check_interval': 5
+            'check_interval': 5,
+            'experimental_edge_spoof': False
         }
     
     def save_config(self):
@@ -1141,7 +1402,8 @@ You can select and copy text from this window!"""
             'mywhoosh_folder': self.mywhoosh_folder.get(),
             'trainerday_folder': self.trainerday_folder.get() if hasattr(self, 'trainerday_folder') else '',
             'start_with_windows': self.start_with_windows.get(),
-            'check_interval': self.interval_var.get()
+            'check_interval': self.interval_var.get(),
+            'experimental_edge_spoof': self.experimental_edge_spoof.get() if hasattr(self, 'experimental_edge_spoof') else False
         }
         with open(CONFIG_FILE, 'w') as f:
             json.dump(config, f, indent=2)
@@ -1246,6 +1508,8 @@ You can select and copy text from this window!"""
             self.trainerday_folder.insert(0, self.config.get('trainerday_folder', ''))
         self.start_with_windows.set(self.config.get('start_with_windows', False))
         self.interval_var.set(self.config.get('check_interval', 5))
+        if hasattr(self, 'experimental_edge_spoof'):
+            self.experimental_edge_spoof.set(self.config.get('experimental_edge_spoof', False))
         self.check_interval = self.interval_var.get() * 60  # Convert to seconds
 
         # Update app sections and status icons based on loaded settings
@@ -1828,6 +2092,7 @@ You can select and copy text from this window!"""
         uploaded = 0
         last_uploaded_file = None
         uploaded_folder = os.path.join(folder, "uploaded")
+        modified_folder = os.path.join(uploaded_folder, "modified")
         os.makedirs(uploaded_folder, exist_ok=True)
 
         # Decide which file extensions to process for this source
@@ -1860,7 +2125,23 @@ You can select and copy text from this window!"""
                     try:
                         self._maybe_log_upload_day_marker()
 
-                        self.garmin_client.upload_activity(file_path)
+                        upload_file_path = file_path
+                        spoof_mode = None
+                        if source_name in ("Wahoo", "TrainerDay", "MyWhoosh") and hasattr(self, 'experimental_edge_spoof') and self.experimental_edge_spoof.get():
+                            upload_file_path, _, spoof_mode = self._build_modified_workout_copy(
+                                file_path, source_name, modified_folder
+                            )
+
+                        self.garmin_client.upload_activity(upload_file_path)
+                        if spoof_mode:
+                            if spoof_mode == "fit_to_tcx":
+                                detail = f"device-spoof: FIT->TCX conversion ({os.path.basename(upload_file_path)})"
+                            elif spoof_mode == "tcx_modified":
+                                detail = f"device-spoof: TCX metadata modified ({os.path.basename(upload_file_path)})"
+                            else:
+                                detail = f"device-spoof fallback: original file upload ({os.path.basename(upload_file_path)})"
+                            log_info(f"Uploaded via experimental path: {detail}")
+                            upload_logger.info(f"Upload path for {filename}: {detail}")
 
                         # For TrainerDay uploads, try to set a friendly activity title
                         if source_name == "TrainerDay":
@@ -2278,6 +2559,10 @@ You can select and copy text from this window!"""
         # View Uploads Log button
         uploads_btn = ttk.Button(btn_frame, text="📄 View Uploads Log", command=self.open_upload_log)
         uploads_btn.pack(side=tk.LEFT, padx=5)
+
+        # Check for updates button
+        updates_btn = ttk.Button(btn_frame, text="Check for updates", command=self.check_for_updates)
+        updates_btn.pack(side=tk.LEFT, padx=5)
         
         # Close button - full width for better visibility
         close_btn = ttk.Button(content, text="Close", command=about_window.destroy, width=15)
@@ -2288,6 +2573,65 @@ You can select and copy text from this window!"""
         req_w = about_window.winfo_reqwidth()
         req_h = about_window.winfo_reqheight()
         about_window.minsize(req_w, req_h)
+
+    def _version_to_tuple(self, value):
+        """Convert version strings like v1.2.3 to comparable tuples."""
+        cleaned = str(value or "").strip()
+        if cleaned.lower().startswith('v'):
+            cleaned = cleaned[1:]
+
+        parts = []
+        for chunk in cleaned.split('.'):
+            digits = ''.join(ch for ch in chunk if ch.isdigit())
+            parts.append(int(digits) if digits else 0)
+
+        return tuple(parts) if parts else (0,)
+
+    def check_for_updates(self):
+        """Check GitHub version.json and notify user about available updates."""
+        try:
+            with urllib.request.urlopen(VERSION_JSON_URL, timeout=10) as response:
+                body = response.read().decode('utf-8')
+
+            payload = json.loads(body)
+            latest_version = str(payload.get('version', '')).strip()
+            release_url = str(payload.get('url', GITHUB_REPO_URL)).strip() or GITHUB_REPO_URL
+
+            if not latest_version:
+                messagebox.showwarning(
+                    "Check for updates",
+                    "Could not find a valid version in version.json."
+                )
+                return
+
+            current_tuple = self._version_to_tuple(VERSION)
+            latest_tuple = self._version_to_tuple(latest_version)
+            latest_label = latest_version if latest_version.lower().startswith('v') else f"v{latest_version}"
+
+            if latest_tuple > current_tuple:
+                messagebox.showinfo(
+                    "Update available",
+                    f"New version {latest_label} is available.\n\n"
+                    f"Get it here:\n{release_url}"
+                )
+            else:
+                messagebox.showinfo(
+                    "Up to date",
+                    f"You are on the latest version ({VERSION})."
+                )
+
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
+            log_warning(f"Update check failed: {e}")
+            messagebox.showwarning(
+                "Check for updates",
+                "Unable to check for updates right now. Please try again later."
+            )
+        except Exception as e:
+            log_warning(f"Unexpected update check error: {e}")
+            messagebox.showwarning(
+                "Check for updates",
+                "Unable to check for updates right now. Please try again later."
+            )
     
     def open_log_file(self):
         """Open the log file in a viewer window (opens at the end)"""

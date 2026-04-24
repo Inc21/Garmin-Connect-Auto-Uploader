@@ -31,6 +31,7 @@ From **v1.0.1** onwards, the app includes a "Smart Migration" feature to handle 
 - **Smart auto-start behavior:** When the app starts with Windows:
   - If you have saved tokens: Silently resumes session and starts monitoring without any login prompts
   - If no tokens exist: Keeps window open and prompts you to click "Test & Login" instead of attempting automatic authentication
+- **Experimental Wahoo Edge spoof mode:** Added an opt-in setting to process Wahoo uploads through a best-effort Garmin Edge compatibility path. Modified files are written to `uploaded/modified`, and detailed logs now show whether each upload used conversion, metadata modification, or fallback.
 
 ### Changed (1.0.7)
 
@@ -38,6 +39,7 @@ From **v1.0.1** onwards, the app includes a "Smart Migration" feature to handle 
 - **Eliminated retry loops:** Login attempts are now single-try instead of 3 retries to avoid triggering Garmin's rate limiting. If login fails, you'll get a clear error message instead of multiple failed attempts.
 - **Better rate limit handling:** Added specific error detection and user-friendly messaging for Garmin's rate limiting (HTTP 429 errors), with clear instructions on what to do.
 - **Persistent login state:** Once you successfully login with "Test & Login", the app remembers you're logged in and won't attempt to re-authenticate when you start auto-sync or save settings.
+- **Experimental spoof fallback behavior:** In experimental Wahoo mode, conversion/modification now retries automatically and, if still unsuccessful, uploads the original file unchanged (without creating an extra fallback copy).
 
 ### Fixed (1.0.7)
 
