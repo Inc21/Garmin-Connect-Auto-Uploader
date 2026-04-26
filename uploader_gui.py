@@ -114,9 +114,10 @@ GITHUB_LOGO_PATH = find_resource(os.path.join("assets", "github_logo.png"))
 WAHOO_LOGO_PATH = find_resource(os.path.join("assets", "wahoo.png"))
 MYWHOOSH_LOGO_PATH = find_resource(os.path.join("assets", "mywhoosh.png"))
 TRAINERDAY_LOGO_PATH = find_resource(os.path.join("assets", "trainerday.png"))
-VERSION = "1.0.7"
-GITHUB_REPO_URL = "https://github.com/Inc21/Wahoo-and-MyWhoos-to-Garmin-Conect-Auto-Uploader"
-VERSION_JSON_URL = "https://raw.githubusercontent.com/Inc21/Wahoo-and-MyWhoos-to-Garmin-Conect-Auto-Uploader/main/version.json"
+VERSION = "1.1.0"
+GITHUB_REPO_URL = "https://github.com/Inc21/Garmin-Connect-Auto-Uploader"
+VERSION_JSON_URL = "https://raw.githubusercontent.com/Inc21/Garmin-Connect-Auto-Uploader/main/version.json"
+LEGACY_VERSION_JSON_URL = "https://raw.githubusercontent.com/Inc21/Wahoo-and-MyWhoos-to-Garmin-Conect-Auto-Uploader/main/version.json"
 LOG_FILE = _resolve_existing_or_default("garmin_uploader.log", LOG_DIR)
 # Upload log (single file; month separators written when month changes)
 UPLOAD_LOG_FILE = _resolve_existing_or_default("garmin_uploads.log", LOG_DIR)
@@ -2587,11 +2588,53 @@ You can select and copy text from this window!"""
 
         return tuple(parts) if parts else (0,)
 
+    def _show_update_available_dialog(self, latest_label, release_url):
+        """Show update dialog with clickable release URL."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Update available")
+
+        base_width, base_height = 480, 180
+        width = int(base_width * (self.scaling / 1.33))
+        height = int(base_height * (self.scaling / 1.33))
+        dialog.geometry(f"{width}x{height}")
+        dialog.resizable(False, False)
+
+        content = ttk.Frame(dialog, padding=14)
+        content.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(content, text=f"New version {latest_label} is available.", font=('Arial', 10, 'bold')).pack(anchor='w', pady=(0, 8))
+        ttk.Label(content, text="Get it here:").pack(anchor='w')
+
+        link_label = ttk.Label(
+            content,
+            text="GitHub Releases",
+            foreground='blue',
+            cursor='hand2',
+            font=('Arial', 9, 'underline')
+        )
+        link_label.pack(anchor='w', pady=(2, 12))
+        link_label.bind("<Button-1>", lambda e: webbrowser.open(release_url))
+
+        btn_frame = ttk.Frame(content)
+        btn_frame.pack(anchor='e')
+        ttk.Button(btn_frame, text="Open", command=lambda: webbrowser.open(release_url)).pack(side='left', padx=(0, 6))
+        ttk.Button(btn_frame, text="Close", command=dialog.destroy).pack(side='left')
+
     def check_for_updates(self):
         """Check GitHub version.json and notify user about available updates."""
         try:
-            with urllib.request.urlopen(VERSION_JSON_URL, timeout=10) as response:
-                body = response.read().decode('utf-8')
+            body = None
+            last_error = None
+            for url in (VERSION_JSON_URL, LEGACY_VERSION_JSON_URL):
+                try:
+                    with urllib.request.urlopen(url, timeout=10) as response:
+                        body = response.read().decode('utf-8')
+                    break
+                except Exception as e:
+                    last_error = e
+
+            if body is None:
+                raise last_error if last_error else urllib.error.URLError("Unable to fetch version.json")
 
             payload = json.loads(body)
             latest_version = str(payload.get('version', '')).strip()
@@ -2609,11 +2652,7 @@ You can select and copy text from this window!"""
             latest_label = latest_version if latest_version.lower().startswith('v') else f"v{latest_version}"
 
             if latest_tuple > current_tuple:
-                messagebox.showinfo(
-                    "Update available",
-                    f"New version {latest_label} is available.\n\n"
-                    f"Get it here:\n{release_url}"
-                )
+                self._show_update_available_dialog(latest_label, release_url)
             else:
                 messagebox.showinfo(
                     "Up to date",

@@ -15,15 +15,15 @@ From **v1.0.1** onwards, the app includes a "Smart Migration" feature to handle 
 >
 > **Upgrading from v1.0.2 or earlier:** The old Startup-folder shortcut (`GarminUploader.lnk`) and XOR-encrypted password in `uploader_config.json` are automatically migrated on first launch of v1.0.3. No manual steps required.
 
-## [1.0.7] - TBD
+## [1.1.0] - TBD
 
-### 🔐 Major Authentication Upgrade (1.0.7)
+### 🔐 Major Authentication Upgrade (1.1.0)
 
 - **NEW: Mobile SSO Authentication:** Upgraded to `garminconnect` v0.3.1 which uses Garmin's official mobile SSO authentication flow (same as the Android app). This replaces the deprecated `garth` library that was causing authentication failures and rate limiting issues.
 - **More reliable authentication:** The new mobile SSO endpoint (`sso.garmin.com/mobile/api/login`) is actively maintained by Garmin and significantly more stable than the previous method.
 - **Automatic token refresh:** Authentication tokens now auto-refresh indefinitely without user interaction, eliminating the need for periodic re-authentication.
 
-### Added (1.0.7)
+### Added (1.1.0)
 
 - **Two-Factor Authentication (MFA/2FA) support:** The app now fully supports Garmin accounts with two-step verification enabled. When logging in for the first time (or when credentials change), you'll be prompted to enter your 6-digit verification code. Authentication tokens are securely saved and automatically reused, so you only need to enter the MFA code once.
 - **Test & Login button:** Added a dedicated "Test & Login" button next to the password field in Garmin Settings. Use this to manually verify your Garmin credentials and save authentication tokens without triggering a full sync.
@@ -32,16 +32,20 @@ From **v1.0.1** onwards, the app includes a "Smart Migration" feature to handle 
   - If you have saved tokens: Silently resumes session and starts monitoring without any login prompts
   - If no tokens exist: Keeps window open and prompts you to click "Test & Login" instead of attempting automatic authentication
 - **Experimental Wahoo Edge spoof mode:** Added an opt-in setting to process Wahoo uploads through a best-effort Garmin Edge compatibility path. Modified files are written to `uploaded/modified`, and detailed logs now show whether each upload used conversion, metadata modification, or fallback.
+- **In-app update checker:** Added a `Check for updates` button in the About window that reads `version.json` from GitHub and compares against the running app version.
+- **Clickable release destination:** When an update is available, the app now shows a clean `GitHub Releases` link plus an `Open` button.
 
-### Changed (1.0.7)
+### Changed (1.1.0)
 
 - **Smarter credential validation:** The app now only prompts to test Garmin credentials when they've actually changed, preventing unnecessary MFA prompts every time you save settings. The login state is tracked and preserved across sessions.
 - **Eliminated retry loops:** Login attempts are now single-try instead of 3 retries to avoid triggering Garmin's rate limiting. If login fails, you'll get a clear error message instead of multiple failed attempts.
 - **Better rate limit handling:** Added specific error detection and user-friendly messaging for Garmin's rate limiting (HTTP 429 errors), with clear instructions on what to do.
 - **Persistent login state:** Once you successfully login with "Test & Login", the app remembers you're logged in and won't attempt to re-authenticate when you start auto-sync or save settings.
 - **Experimental spoof fallback behavior:** In experimental Wahoo mode, conversion/modification now retries automatically and, if still unsuccessful, uploads the original file unchanged (without creating an extra fallback copy).
+- **Cleaner bottom action layout:** Removed the old `Actions` heading/icon, moved core controls upward, and placed `About & update` on its own row for better visual balance.
+- **Updated experimental mode naming/help text:** Renamed the setting to `Experimental Garmin mode` and refreshed the info dialog wording to clarify challenge credit and metric timing expectations.
 
-### Fixed (1.0.7)
+### Fixed (1.1.0)
 
 - **Fixed authentication failures** caused by Garmin deprecating the old `garth` library authentication method. The new mobile SSO flow is the official, supported method.
 - **Fixed rate limiting issues** where the app would trigger Garmin's security measures by making too many login attempts on startup or during normal operation.
