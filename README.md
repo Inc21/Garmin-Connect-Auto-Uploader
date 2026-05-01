@@ -2,7 +2,7 @@
 
 Automatically upload workout activities from Wahoo, MyWhoosh, and TrainerDay to Garmin Connect.
 
-Version 1.0.7 | Windows Desktop Application (Nuitka onefile + folder build)
+Version 1.1.1 | Windows Desktop Application (Nuitka onefile + folder build)
 
 ---
 
@@ -70,20 +70,18 @@ I built this originally as a personal Python script to solve my own manual uploa
 
 **Two download options are available:**
 
-| Option | File | Best for |
-|--------|------|----------|
-| **Folder build (recommended)** | `GarminUploader-v1.0.7-folder.zip` | Most users — less likely to trigger Windows Defender |
-| **Single-file build** | `GarminUploader-v1.0.7.exe` | Advanced users who prefer a single executable |
+- **Folder build (recommended):** `GarminUploader-v1.1.1-folder.zip` — Most users; less likely to trigger Windows Defender.
+- **Single-file build:** `GarminUploader-v1.1.1.exe` — Advanced users who prefer a single executable.
 
 #### Option A: Folder build (recommended)
 
-1. Download `GarminUploader-v1.0.7-folder.zip` from Releases
+1. Download `GarminUploader-v1.1.1-folder.zip` from Releases
 2. Extract the ZIP to a folder (e.g., `C:\GarminUploader\` or your Desktop)
 3. Run `GarminUploader.exe` from the extracted folder
 
 #### Option B: Single-file build
 
-1. Download `GarminUploader-v1.0.7.exe` from Releases
+1. Download `GarminUploader-v1.1.1.exe` from Releases
 2. Place it anywhere you like (Desktop, Documents, etc.)
 3. Double-click to run
 
@@ -242,11 +240,11 @@ The app stores its configuration and log files alongside the app, usually in a s
 **Recommended layout for folder builds (for easy upgrades):**
 
 ```text
-C:\\GarminUploader\\
+C:\GarminUploader\
     uploader_config.json
     garmin_uploader.log
     garmin_uploads.log
-    GarminUploader-v1.0.7-folder\\
+    GarminUploader-v1.1.1-folder\
         GarminUploader.exe
 ```
 
@@ -329,7 +327,7 @@ Because this app is a small, niche tool that logs in to a website, stores creden
 
 **What you can do:**
 
-1. **Try the folder build:** Download `GarminUploader-v1.0.5-folder.zip` instead of the single `.exe`. Unpacked builds are less likely to trigger false positives.
+1. **Try the folder build:** Download `GarminUploader-v1.1.1-folder.zip` instead of the single `.exe`. Unpacked builds are less likely to trigger false positives.
 
 2. **Add an exception:** If you trust the source, add the app folder to Windows Defender's exclusion list:
    - Open **Windows Security** → **Virus & threat protection** → **Manage settings**
@@ -344,8 +342,8 @@ Because this app is a small, niche tool that logs in to a website, stores creden
 4. **Build from source:** If you prefer not to trust pre-built binaries:
 
    ```bash
-   git clone https://github.com/Inc21/Wahoo-and-MyWhoos-to-Garmin-Conect-Auto-Uploader.git
-   cd Wahoo-and-MyWhoos-to-Garmin-Conect-Auto-Uploader
+   git clone https://github.com/Inc21/Garmin-Connect-Auto-Uploader.git
+   cd Garmin-Connect-Auto-Uploader
    pip install -r requirements.txt
    python uploader_gui.py
    ```

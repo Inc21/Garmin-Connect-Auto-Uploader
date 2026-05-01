@@ -23,7 +23,13 @@ import tempfile
 import xml.etree.ElementTree as ET
 import urllib.request
 import urllib.error
-from garminconnect import Garmin
+from importlib.metadata import PackageNotFoundError, version as get_installed_package_version
+try:
+    from garminconnect import Garmin
+    GARMINCONNECT_IMPORT_ERROR = None
+except Exception as exc:
+    Garmin = None
+    GARMINCONNECT_IMPORT_ERROR = exc
 from PIL import Image, ImageTk
 from pystray import Icon, Menu, MenuItem
 import webbrowser
@@ -53,6 +59,16 @@ def _get_base_and_log_dirs():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     return script_dir, script_dir
 
+def _should_prefer_parent_files(default_dir):
+    if not (getattr(sys, "frozen", False) or "__compiled__" in globals()):
+        return True
+    bundle_markers = (
+        os.path.join(default_dir, "python311.dll"),
+        os.path.join(default_dir, "assets"),
+        os.path.join(default_dir, "tcl"),
+    )
+    return any(os.path.exists(marker) for marker in bundle_markers)
+
 def _resolve_existing_or_default(filename, default_dir):
     """Return a path for config/log files, preferring existing files.
 
@@ -63,10 +79,11 @@ def _resolve_existing_or_default(filename, default_dir):
     """
     parent_dir = os.path.dirname(default_dir) if default_dir else ""
     parent_path = os.path.join(parent_dir, filename) if parent_dir else ""
+    prefer_parent = _should_prefer_parent_files(default_dir)
 
     # Prefer an existing file in the parent directory so multiple versioned
     # folders (or different builds) automatically share the same files.
-    if parent_path and os.path.isfile(parent_path):
+    if prefer_parent and parent_path and os.path.isfile(parent_path):
         return parent_path
 
     # Fall back to any existing file in the current (exe) directory to remain
@@ -86,7 +103,7 @@ def _resolve_existing_or_default(filename, default_dir):
         # e.g. "C:\\" -> tail == ""
         return bool(drive) and tail == ""
 
-    if parent_dir and not _is_drive_root(parent_dir):
+    if prefer_parent and parent_dir and not _is_drive_root(parent_dir):
         return parent_path
 
     # As a last resort (e.g. onefile exe placed directly in an app folder
@@ -114,10 +131,12 @@ GITHUB_LOGO_PATH = find_resource(os.path.join("assets", "github_logo.png"))
 WAHOO_LOGO_PATH = find_resource(os.path.join("assets", "wahoo.png"))
 MYWHOOSH_LOGO_PATH = find_resource(os.path.join("assets", "mywhoosh.png"))
 TRAINERDAY_LOGO_PATH = find_resource(os.path.join("assets", "trainerday.png"))
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 GITHUB_REPO_URL = "https://github.com/Inc21/Garmin-Connect-Auto-Uploader"
 VERSION_JSON_URL = "https://raw.githubusercontent.com/Inc21/Garmin-Connect-Auto-Uploader/main/version.json"
 LEGACY_VERSION_JSON_URL = "https://raw.githubusercontent.com/Inc21/Wahoo-and-MyWhoos-to-Garmin-Conect-Auto-Uploader/main/version.json"
+MIN_GARMINCONNECT_VERSION = "0.3.2"
+RECOMMENDED_GARMINCONNECT_VERSION = "0.3.2"
 LOG_FILE = _resolve_existing_or_default("garmin_uploader.log", LOG_DIR)
 # Upload log (single file; month separators written when month changes)
 UPLOAD_LOG_FILE = _resolve_existing_or_default("garmin_uploads.log", LOG_DIR)
@@ -142,6 +161,70 @@ logging.basicConfig(
     handlers=[file_handler, console_handler]
 )
 logger = logging.getLogger(__name__)
+
+def _version_key(version_text):
+    parts = []
+    for raw_part in str(version_text).split("."):
+        digits = "".join(ch for ch in raw_part if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3])
+
+def _get_installed_garminconnect_version():
+    try:
+        return get_installed_package_version("garminconnect")
+    except PackageNotFoundError:
+        return None
+    except Exception as exc:
+        logger.warning(f"Could not read installed garminconnect version: {exc}")
+        return None
+
+def ensure_supported_garminconnect():
+    installed_version = _get_installed_garminconnect_version()
+    if GARMINCONNECT_IMPORT_ERROR is not None:
+        logger.error(f"garminconnect import failed: {GARMINCONNECT_IMPORT_ERROR}")
+        messagebox.showerror(
+            "Unsupported Garmin Login Library",
+            "Garmin Connect support could not be loaded.\n\n"
+            f"Installed garminconnect version: {installed_version or 'not installed'}\n"
+            f"Import error: {GARMINCONNECT_IMPORT_ERROR}\n\n"
+            f"This app requires garminconnect {MIN_GARMINCONNECT_VERSION} or newer.\n"
+            f"The recommended version is {RECOMMENDED_GARMINCONNECT_VERSION}.\n\n"
+            "Please reinstall dependencies from requirements.txt and rebuild the app."
+        )
+        return False
+    if not installed_version:
+        logger.error("garminconnect is not installed")
+        messagebox.showerror(
+            "Unsupported Garmin Login Library",
+            "garminconnect is not installed.\n\n"
+            f"This app requires garminconnect {MIN_GARMINCONNECT_VERSION} or newer.\n"
+            f"The recommended version is {RECOMMENDED_GARMINCONNECT_VERSION}.\n\n"
+            "Please reinstall dependencies from requirements.txt and rebuild the app."
+        )
+        return False
+    logger.info(f"Detected garminconnect {installed_version}")
+    if _version_key(installed_version) < _version_key(MIN_GARMINCONNECT_VERSION):
+        logger.error(
+            f"Unsupported garminconnect version detected: {installed_version}. "
+            f"Minimum supported version is {MIN_GARMINCONNECT_VERSION}."
+        )
+        messagebox.showerror(
+            "Unsupported Garmin Login Library",
+            f"This build is using garminconnect {installed_version}.\n\n"
+            f"Garmin Connect Uploader v{VERSION} requires garminconnect "
+            f"{MIN_GARMINCONNECT_VERSION} or newer.\n"
+            f"The recommended version is {RECOMMENDED_GARMINCONNECT_VERSION}.\n\n"
+            "Please reinstall dependencies from requirements.txt and rebuild the app."
+        )
+        return False
+    if _version_key(installed_version) < _version_key(RECOMMENDED_GARMINCONNECT_VERSION):
+        logger.warning(
+            f"garminconnect {installed_version} is supported but older than the recommended "
+            f"version {RECOMMENDED_GARMINCONNECT_VERSION}."
+        )
+    return True
 
 # Dedicated upload-only logger (separate file, no rotation; date markers in file)
 upload_logger = logging.getLogger("upload_log")
@@ -2782,7 +2865,7 @@ You can select and copy text from this window!"""
                 btn_frame.pack(pady=20)
                 ttk.Button(btn_frame, text="Find Next", command=do_search, width=15).pack(side='left', padx=10)
                 ttk.Button(btn_frame, text="Close", command=search_window.destroy, width=15).pack(side='left', padx=10)
-                
+
                 # Bind Enter key to search
                 search_entry.bind('<Return>', lambda e: do_search())
             
@@ -2809,27 +2892,27 @@ You can select and copy text from this window!"""
                     f"Uploads log not found yet.\n\nIt will be created at:\n{UPLOAD_LOG_FILE}\n\nonce uploads occur."
                 )
                 return
-            
+
             log_window = tk.Toplevel(self.root)
             log_window.title("Garmin Uploader - Uploads Log")
-            
+
             base_width, base_height = 800, 500
             width = int(base_width * (self.scaling / 1.33))
             height = int(base_height * (self.scaling / 1.33))
             log_window.geometry(f"{width}x{height}")
-            
+
             text_widget = scrolledtext.ScrolledText(
                 log_window,
                 wrap=tk.WORD,
                 font=('Courier New', 9)
             )
             text_widget.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-            
+
             with open(UPLOAD_LOG_FILE, 'r', encoding='utf-8') as f:
                 log_content = f.read()
                 text_widget.insert(1.0, log_content)
             text_widget.see(tk.END)
-            
+
             def block_edit(event):
                 if event.state & 0x4:
                     return
@@ -2837,10 +2920,10 @@ You can select and copy text from this window!"""
                     return
                 return "break"
             text_widget.bind("<Key>", block_edit)
-            
+
             close_btn = ttk.Button(log_window, text="Close", command=log_window.destroy)
             close_btn.pack(pady=5)
-            
+
             logger.info("Uploads log opened by user")
         except Exception as e:
             log_error(f"Failed to open uploads log file: {str(e)}")
@@ -2857,6 +2940,11 @@ def main():
     start_minimized = '--minimized' in sys.argv or '--startup' in sys.argv
     
     root = tk.Tk()
+    root.withdraw()
+    if not ensure_supported_garminconnect():
+        root.destroy()
+        return
+    root.deiconify()
     app = ConnectUploaderGUI(root)
     
     # Auto-start monitoring if both settings are enabled and starting from startup

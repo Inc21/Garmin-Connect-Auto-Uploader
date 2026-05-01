@@ -1,0 +1,6 @@
+garminconnect==0.3.2
+curl_cffi
+Pillow==11.2.1
+pystray==0.19.5
+keyring
+fitdecode

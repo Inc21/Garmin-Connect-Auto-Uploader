@@ -15,11 +15,23 @@ From **v1.0.1** onwards, the app includes a "Smart Migration" feature to handle 
 >
 > **Upgrading from v1.0.2 or earlier:** The old Startup-folder shortcut (`GarminUploader.lnk`) and XOR-encrypted password in `uploader_config.json` are automatically migrated on first launch of v1.0.3. No manual steps required.
 
+## [1.1.1] - 2026-04-30
+
+### Changed (1.1.1)
+
+- **More reliable Garmin login setup:** This release locks the app to the Garmin login version that worked in testing, so fresh sign-ins are more consistent.
+- **Update button now opens the right page:** In-app update prompts now take you to the current GitHub releases page.
+
+### Fixed (1.1.1)
+
+- **Fixed some Garmin login problems on first setup:** This should reduce the chance of hitting Garmin login errors when testing a new account.
+- **Fixed a bad environment mismatch:** The app now warns you clearly if it is running with an unsupported Garmin login library.
+
 ## [1.1.0] - TBD
 
 ### 🔐 Major Authentication Upgrade (1.1.0)
 
-- **NEW: Mobile SSO Authentication:** Upgraded to `garminconnect` v0.3.1 which uses Garmin's official mobile SSO authentication flow (same as the Android app). This replaces the deprecated `garth` library that was causing authentication failures and rate limiting issues.
+- **NEW: Mobile SSO Authentication:** Upgraded to `garminconnect` v0.3.2 which uses Garmin's official mobile SSO authentication flow (same as the Android app). This replaces the deprecated `garth` library that was causing authentication failures and rate limiting issues.
 - **More reliable authentication:** The new mobile SSO endpoint (`sso.garmin.com/mobile/api/login`) is actively maintained by Garmin and significantly more stable than the previous method.
 - **Automatic token refresh:** Authentication tokens now auto-refresh indefinitely without user interaction, eliminating the need for periodic re-authentication.
 
