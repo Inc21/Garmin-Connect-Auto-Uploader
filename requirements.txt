@@ -4,3 +4,4 @@ Pillow==11.2.1
 pystray==0.19.5
 keyring
 fitdecode
+fit-tool==0.9.15

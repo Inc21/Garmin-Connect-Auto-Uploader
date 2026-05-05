@@ -15,6 +15,18 @@ From **v1.0.1** onwards, the app includes a "Smart Migration" feature to handle 
 >
 > **Upgrading from v1.0.2 or earlier:** The old Startup-folder shortcut (`GarminUploader.lnk`) and XOR-encrypted password in `uploader_config.json` are automatically migrated on first launch of v1.0.3. No manual steps required.
 
+## [1.1.2] - 2026-05-04
+
+### Changed (1.1.2)
+
+- **Experimental Garmin mode now tries a direct FIT rewrite first:** For supported `.fit` files, the app now tries to make the original FIT file look more like a Garmin device recording before falling back to TCX conversion.
+- **Single-file builds now keep settings and logs beside the EXE:** This makes test builds easier to move around without accidentally reusing files from a parent folder.
+
+### Fixed (1.1.2)
+
+- **Fixed confusing single-file test behavior:** The one-file app now saves `uploader_config.json`, `garmin_uploader.log`, and `garmin_uploads.log` next to the EXE as expected.
+- **Improved experimental upload logging:** The upload log now shows whether a workout used FIT metadata rewrite, FIT-to-TCX conversion, TCX metadata rewrite, or the original file path.
+
 ## [1.1.1] - 2026-04-30
 
 ### Changed (1.1.1)

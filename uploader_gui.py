@@ -30,6 +30,30 @@ try:
 except Exception as exc:
     Garmin = None
     GARMINCONNECT_IMPORT_ERROR = exc
+try:
+    from fit_tool.base_type import BaseType as FitToolBaseType
+    from fit_tool.definition_message import DefinitionMessage as FitToolDefinitionMessage
+    from fit_tool.field import Field as FitToolField
+    from fit_tool.fit_file import FitFile as FitToolFitFile
+    from fit_tool.fit_file_builder import FitFileBuilder as FitToolFitFileBuilder
+    from fit_tool.profile.messages.activity_message import ActivityMessage as FitToolActivityMessage
+    from fit_tool.profile.messages.device_info_message import DeviceInfoMessage as FitToolDeviceInfoMessage
+    from fit_tool.profile.messages.file_creator_message import FileCreatorMessage as FitToolFileCreatorMessage
+    from fit_tool.profile.messages.file_id_message import FileIdMessage as FitToolFileIdMessage
+    from fit_tool.profile.profile_type import Manufacturer as FitToolManufacturer
+    FIT_TOOL_IMPORT_ERROR = None
+except Exception as exc:
+    FitToolBaseType = None
+    FitToolDefinitionMessage = None
+    FitToolField = None
+    FitToolFitFile = None
+    FitToolFitFileBuilder = None
+    FitToolActivityMessage = None
+    FitToolDeviceInfoMessage = None
+    FitToolFileCreatorMessage = None
+    FitToolFileIdMessage = None
+    FitToolManufacturer = None
+    FIT_TOOL_IMPORT_ERROR = exc
 from PIL import Image, ImageTk
 from pystray import Icon, Menu, MenuItem
 import webbrowser
@@ -131,10 +155,16 @@ GITHUB_LOGO_PATH = find_resource(os.path.join("assets", "github_logo.png"))
 WAHOO_LOGO_PATH = find_resource(os.path.join("assets", "wahoo.png"))
 MYWHOOSH_LOGO_PATH = find_resource(os.path.join("assets", "mywhoosh.png"))
 TRAINERDAY_LOGO_PATH = find_resource(os.path.join("assets", "trainerday.png"))
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 GITHUB_REPO_URL = "https://github.com/Inc21/Garmin-Connect-Auto-Uploader"
 VERSION_JSON_URL = "https://raw.githubusercontent.com/Inc21/Garmin-Connect-Auto-Uploader/main/version.json"
 LEGACY_VERSION_JSON_URL = "https://raw.githubusercontent.com/Inc21/Wahoo-and-MyWhoos-to-Garmin-Conect-Auto-Uploader/main/version.json"
+GARMIN_SPOOF_DEVICE_NAME = "Garmin Edge 530"
+GARMIN_SPOOF_UNIT_ID = 1234567890
+GARMIN_SPOOF_PRODUCT_ID = 3121
+GARMIN_SPOOF_SOFTWARE_VERSION = 17.0
+GARMIN_SPOOF_VERSION_MAJOR = 17
+GARMIN_SPOOF_VERSION_MINOR = 0
 MIN_GARMINCONNECT_VERSION = "0.3.2"
 RECOMMENDED_GARMINCONNECT_VERSION = "0.3.2"
 LOG_FILE = _resolve_existing_or_default("garmin_uploader.log", LOG_DIR)
@@ -158,7 +188,8 @@ console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(
 
 logging.basicConfig(
     level=logging.INFO,
-    handlers=[file_handler, console_handler]
+    handlers=[file_handler, console_handler],
+    force=True
 )
 logger = logging.getLogger(__name__)
 
@@ -1232,6 +1263,233 @@ You can select and copy text from this window!"""
         )
         messagebox.showinfo("Experimental Garmin Mode", info_text)
 
+    def _fit_tool_manufacturer_value(self, name):
+        if FitToolManufacturer is None:
+            return None
+        manufacturer = getattr(FitToolManufacturer, name, None)
+        return manufacturer.value if manufacturer is not None else None
+
+    def _should_modify_fit_manufacturer(self, manufacturer):
+        if manufacturer is None:
+            return False
+        supported = {
+            self._fit_tool_manufacturer_value("DEVELOPMENT"),
+            self._fit_tool_manufacturer_value("ZWIFT"),
+            self._fit_tool_manufacturer_value("WAHOO_FITNESS"),
+            self._fit_tool_manufacturer_value("PEAKSWARE"),
+            self._fit_tool_manufacturer_value("HAMMERHEAD"),
+            self._fit_tool_manufacturer_value("COROS"),
+            331,
+        }
+        return manufacturer in supported
+
+    def _should_modify_fit_device_info(self, manufacturer):
+        if manufacturer == 0:
+            return True
+        return self._should_modify_fit_manufacturer(manufacturer)
+
+    def _patch_fit_tool(self):
+        if FitToolField is None or FitToolBaseType is None:
+            return False
+
+        def _lenient_read_strings_from_bytes(field, bytes_buffer):
+            try:
+                string_container = bytes_buffer.decode("utf-8")
+            except UnicodeDecodeError:
+                try:
+                    string_container = bytes_buffer.decode("latin-1")
+                except Exception:
+                    string_container = bytes_buffer.decode("utf-8", errors="replace")
+            strings = string_container.split("\u0000")
+            strings = strings[:-1]
+            strings = [x for x in strings if x]
+            field.encoded_values = []
+            field.encoded_values.extend(strings)
+
+        def _lenient_get_length_from_size(base_type, size):
+            if base_type == FitToolBaseType.STRING or base_type == FitToolBaseType.BYTE:
+                return 0 if size == 0 else 1
+            return size // base_type.size
+
+        FitToolField.get_length_from_size = staticmethod(_lenient_get_length_from_size)
+        FitToolField.read_strings_from_bytes = _lenient_read_strings_from_bytes
+        return True
+
+    def _strip_unknown_fit_fields(self, fit_file):
+        for record in fit_file.records:
+            message = record.message
+            if not hasattr(message, "definition_message") or message.definition_message is None:
+                continue
+            if not hasattr(message, "fields"):
+                continue
+
+            existing_field_ids = {
+                field.field_id for field in message.fields if field.is_valid()
+            }
+            definition_field_ids = {
+                field_definition.field_id
+                for field_definition in message.definition_message.field_definitions
+            }
+            if definition_field_ids - existing_field_ids:
+                message.definition_message = None
+
+    def _read_fit_file_with_captured_warnings(self, input_path):
+        fit_tool_logger = logging.getLogger("fit_tool")
+        warning_lines = []
+        original_warning = fit_tool_logger.warning
+
+        def _capture_warning(message, *args, **kwargs):
+            if args:
+                try:
+                    rendered = message % args
+                except Exception:
+                    rendered = f"{message} {' '.join(str(arg) for arg in args)}"
+            else:
+                rendered = str(message)
+            warning_lines.append(rendered.strip())
+
+        fit_tool_logger.warning = _capture_warning
+        try:
+            fit_file = FitToolFitFile.from_file(input_path)
+        finally:
+            fit_tool_logger.warning = original_warning
+
+        warning_lines = [line for line in warning_lines if line]
+        return fit_file, warning_lines
+
+    def _summarize_fit_tool_warnings(self, warning_lines):
+        unique_lines = []
+        seen_lines = set()
+        for line in warning_lines:
+            if line not in seen_lines:
+                unique_lines.append(line)
+                seen_lines.add(line)
+
+        if not unique_lines:
+            return []
+
+        summary_lines = []
+        summary_markers = (
+            "is not defined for message",
+            "Some fields were not read correctly",
+        )
+        recoverable_count = sum(
+            1 for line in warning_lines if any(marker in line for marker in summary_markers)
+        )
+        if recoverable_count:
+            summary_lines.append(
+                f"fit_tool reported {recoverable_count} recoverable parse warning(s); continuing FIT rewrite with regenerated definitions."
+            )
+
+        for line in unique_lines:
+            if not any(marker in line for marker in summary_markers):
+                summary_lines.append(line)
+
+        return summary_lines
+
+    def _add_fit_message_with_safe_definition(self, builder, message):
+        if hasattr(message, "fields"):
+            message.definition_message = None
+            definition_message = FitToolDefinitionMessage.from_data_message(message)
+            message.set_definition_message(definition_message)
+            builder.add(definition_message)
+        builder.add(message)
+
+    def _rewrite_fit_for_garmin_device(self, input_path, output_path):
+        if FitToolFitFile is None:
+            log_warning(
+                "Experimental FIT metadata rewrite requires 'fit_tool'. "
+                f"Falling back to TCX conversion. ({FIT_TOOL_IMPORT_ERROR})"
+            )
+            return False
+
+        try:
+            self._patch_fit_tool()
+            fit_file, warning_lines = self._read_fit_file_with_captured_warnings(input_path)
+            self._strip_unknown_fit_fields(fit_file)
+
+            builder = FitToolFitFileBuilder(auto_define=True)
+            skipped_device_type_zero = False
+            activity_messages = []
+
+            for record in fit_file.records:
+                message = record.message
+                global_id = getattr(message, "global_id", None)
+
+                if isinstance(message, FitToolActivityMessage):
+                    activity_messages.append(message)
+                    continue
+
+                if global_id == FitToolFileIdMessage.ID:
+                    if isinstance(message, FitToolDefinitionMessage):
+                        continue
+
+                    if isinstance(message, FitToolFileIdMessage):
+                        if self._should_modify_fit_manufacturer(getattr(message, "manufacturer", None)):
+                            new_message = FitToolFileIdMessage()
+                            new_message.time_created = getattr(message, "time_created", None) or int(datetime.datetime.now().timestamp() * 1000)
+                            if getattr(message, "type", None) is not None:
+                                new_message.type = message.type
+                            new_message.serial_number = GARMIN_SPOOF_UNIT_ID
+                            new_message.manufacturer = self._fit_tool_manufacturer_value("GARMIN") or 1
+                            new_message.product = GARMIN_SPOOF_PRODUCT_ID
+                            builder.add(FitToolDefinitionMessage.from_data_message(new_message))
+                            builder.add(new_message)
+
+                            creator_message = FitToolFileCreatorMessage()
+                            creator_message.software_version = GARMIN_SPOOF_SOFTWARE_VERSION
+                            if hasattr(creator_message, "hardware_version"):
+                                creator_message.hardware_version = 255
+                            builder.add(FitToolDefinitionMessage.from_data_message(creator_message))
+                            builder.add(creator_message)
+                            continue
+
+                        self._add_fit_message_with_safe_definition(builder, message)
+                        continue
+
+                if global_id == FitToolFileCreatorMessage.ID:
+                    continue
+
+                if global_id == FitToolDeviceInfoMessage.ID and isinstance(message, FitToolDeviceInfoMessage):
+                    if getattr(message, "device_type", None) == 0:
+                        skipped_device_type_zero = True
+                        continue
+
+                    if skipped_device_type_zero and getattr(message, "device_index", None) is not None and message.device_index > 0:
+                        message.device_index = message.device_index - 1
+
+                    if self._should_modify_fit_device_info(getattr(message, "manufacturer", None)):
+                        if getattr(message, "garmin_product", None) is not None:
+                            message.garmin_product = GARMIN_SPOOF_PRODUCT_ID
+                        if getattr(message, "product", None) is not None:
+                            message.product = GARMIN_SPOOF_PRODUCT_ID
+                        if getattr(message, "manufacturer", None) is not None:
+                            message.manufacturer = self._fit_tool_manufacturer_value("GARMIN") or 1
+                        if getattr(message, "serial_number", None) is not None:
+                            message.serial_number = GARMIN_SPOOF_UNIT_ID
+                        if getattr(message, "product_name", None) is not None:
+                            message.product_name = ""
+                        if getattr(message, "software_version", None) is not None:
+                            message.software_version = GARMIN_SPOOF_SOFTWARE_VERSION
+
+                self._add_fit_message_with_safe_definition(builder, message)
+
+            for activity_message in activity_messages:
+                self._add_fit_message_with_safe_definition(builder, activity_message)
+
+            modified_fit = builder.build()
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            modified_fit.to_file(output_path)
+
+            if warning_lines:
+                for line in self._summarize_fit_tool_warnings(warning_lines):
+                    log_warning(f"fit_tool warning for {os.path.basename(input_path)}: {line}")
+
+            return True
+        except Exception as e:
+            log_warning(f"Experimental FIT metadata rewrite failed for {os.path.basename(input_path)}: {e}")
+            return False
+
     def _modify_tcx_for_garmin_device(self, input_path, output_path):
         """Best-effort TCX metadata rewrite so Garmin sees Garmin-like device fields."""
         try:
@@ -1254,12 +1512,12 @@ You can select and copy text from this window!"""
                 creator.clear()
                 creator.attrib[f'{{{xsi_ns}}}type'] = 'Device_t'
 
-                ET.SubElement(creator, f'{{{tcx_ns}}}Name').text = 'Garmin Edge 530'
-                ET.SubElement(creator, f'{{{tcx_ns}}}UnitId').text = '1234567890'
-                ET.SubElement(creator, f'{{{tcx_ns}}}ProductID').text = '3121'
+                ET.SubElement(creator, f'{{{tcx_ns}}}Name').text = GARMIN_SPOOF_DEVICE_NAME
+                ET.SubElement(creator, f'{{{tcx_ns}}}UnitId').text = str(GARMIN_SPOOF_UNIT_ID)
+                ET.SubElement(creator, f'{{{tcx_ns}}}ProductID').text = str(GARMIN_SPOOF_PRODUCT_ID)
                 version = ET.SubElement(creator, f'{{{tcx_ns}}}Version')
-                ET.SubElement(version, f'{{{tcx_ns}}}VersionMajor').text = '17'
-                ET.SubElement(version, f'{{{tcx_ns}}}VersionMinor').text = '0'
+                ET.SubElement(version, f'{{{tcx_ns}}}VersionMajor').text = str(GARMIN_SPOOF_VERSION_MAJOR)
+                ET.SubElement(version, f'{{{tcx_ns}}}VersionMinor').text = str(GARMIN_SPOOF_VERSION_MINOR)
                 ET.SubElement(version, f'{{{tcx_ns}}}BuildMajor').text = '0'
                 ET.SubElement(version, f'{{{tcx_ns}}}BuildMinor').text = '0'
 
@@ -1396,12 +1654,12 @@ You can select and copy text from this window!"""
 
             creator = ET.SubElement(activity, f"{{{tcx_ns}}}Creator")
             creator.attrib[f"{{{xsi_ns}}}type"] = "Device_t"
-            ET.SubElement(creator, f"{{{tcx_ns}}}Name").text = "Garmin Edge 530"
-            ET.SubElement(creator, f"{{{tcx_ns}}}UnitId").text = "1234567890"
-            ET.SubElement(creator, f"{{{tcx_ns}}}ProductID").text = "3121"
+            ET.SubElement(creator, f"{{{tcx_ns}}}Name").text = GARMIN_SPOOF_DEVICE_NAME
+            ET.SubElement(creator, f"{{{tcx_ns}}}UnitId").text = str(GARMIN_SPOOF_UNIT_ID)
+            ET.SubElement(creator, f"{{{tcx_ns}}}ProductID").text = str(GARMIN_SPOOF_PRODUCT_ID)
             version = ET.SubElement(creator, f"{{{tcx_ns}}}Version")
-            ET.SubElement(version, f"{{{tcx_ns}}}VersionMajor").text = "17"
-            ET.SubElement(version, f"{{{tcx_ns}}}VersionMinor").text = "0"
+            ET.SubElement(version, f"{{{tcx_ns}}}VersionMajor").text = str(GARMIN_SPOOF_VERSION_MAJOR)
+            ET.SubElement(version, f"{{{tcx_ns}}}VersionMinor").text = str(GARMIN_SPOOF_VERSION_MINOR)
             ET.SubElement(version, f"{{{tcx_ns}}}BuildMajor").text = "0"
             ET.SubElement(version, f"{{{tcx_ns}}}BuildMinor").text = "0"
 
@@ -1426,6 +1684,17 @@ You can select and copy text from this window!"""
         os.makedirs(modified_folder, exist_ok=True)
 
         if ext == '.fit':
+            max_attempts = 2
+            for attempt in range(1, max_attempts + 1):
+                spoof_applied = self._rewrite_fit_for_garmin_device(file_path, modified_path)
+                if spoof_applied:
+                    if attempt > 1:
+                        log_info(f"Experimental spoof succeeded on retry {attempt} for {filename}")
+                    return modified_path, True, "fit_metadata_modified"
+                if attempt < max_attempts:
+                    log_warning(f"Experimental spoof retrying FIT metadata rewrite ({attempt}/{max_attempts}) for {filename}")
+                    time.sleep(1)
+
             converted_path = os.path.join(modified_folder, f"{stem}_spoofed.tcx")
             max_attempts = 2
             for attempt in range(1, max_attempts + 1):
@@ -2067,6 +2336,25 @@ You can select and copy text from this window!"""
         # Run sync in background thread
         thread = threading.Thread(target=self._sync_files, daemon=True)
         thread.start()
+
+    def _get_allowed_extensions(self, source_name):
+        if source_name == "TrainerDay":
+            return (".fit", ".tcx")
+        return (".fit",)
+
+    def _get_pending_source_files(self, folder, allowed_exts):
+        pending_files = []
+        for filename in os.listdir(folder):
+            if filename == 'uploaded':
+                continue
+            if not filename.lower().endswith(allowed_exts):
+                continue
+
+            file_path = os.path.join(folder, filename)
+            if os.path.isfile(file_path):
+                pending_files.append(filename)
+
+        return pending_files
     
     def _sync_files(self):
         self.sync_button.config(state='disabled')
@@ -2111,6 +2399,8 @@ You can select and copy text from this window!"""
         
         uploaded_count = 0
         last_uploaded_file = None
+        failed_count = 0
+        pending_count = 0
 
         # Determine which apps have folders configured
         wahoo_folder = self.wahoo_folder.get().strip()
@@ -2120,7 +2410,19 @@ You can select and copy text from this window!"""
         # Take a snapshot of activities BEFORE processing any files
         # This is used for TrainerDay title mapping to identify which activity was just uploaded
         pre_sync_activity_ids = None
+        trainerday_has_pending_files = False
         if trainerday_folder and os.path.isdir(trainerday_folder):
+            try:
+                trainerday_has_pending_files = bool(
+                    self._get_pending_source_files(
+                        trainerday_folder,
+                        self._get_allowed_extensions("TrainerDay")
+                    )
+                )
+            except Exception as pending_err:
+                log_warning(f"Could not inspect TrainerDay folder before sync: {pending_err}")
+
+        if trainerday_has_pending_files:
             try:
                 pre_activities = self.garmin_client.get_activities(0, 20)
                 pre_sync_activity_ids = {
@@ -2130,26 +2432,34 @@ You can select and copy text from this window!"""
                 }
                 logger.info(f"Captured pre-sync activity snapshot: {len(pre_sync_activity_ids)} activities")
             except Exception as pre_err:
-                log_warning(f"Could not capture pre-sync activities for TrainerDay title mapping: {pre_err}")
+                log_warning(
+                    f"Could not capture pre-sync activities for TrainerDay title mapping: {pre_err}"
+                )
 
         # Sync Wahoo files (only if folder exists)
         if wahoo_folder and os.path.isdir(wahoo_folder):
-            count, last_file = self._process_folder(wahoo_folder, "Wahoo", pre_sync_activity_ids)
+            count, last_file, attempted, failed = self._process_folder(wahoo_folder, "Wahoo", pre_sync_activity_ids)
             uploaded_count += count
+            pending_count += attempted
+            failed_count += failed
             if last_file:
                 last_uploaded_file = last_file
 
         # Sync MyWhoosh files (only if folder exists)
         if mywhoosh_folder and os.path.isdir(mywhoosh_folder):
-            count, last_file = self._process_folder(mywhoosh_folder, "MyWhoosh", pre_sync_activity_ids)
+            count, last_file, attempted, failed = self._process_folder(mywhoosh_folder, "MyWhoosh", pre_sync_activity_ids)
             uploaded_count += count
+            pending_count += attempted
+            failed_count += failed
             if last_file:
                 last_uploaded_file = last_file
 
         # Sync TrainerDay files (only if folder exists)
         if trainerday_folder and os.path.isdir(trainerday_folder):
-            count, last_file = self._process_folder(trainerday_folder, "TrainerDay", pre_sync_activity_ids)
+            count, last_file, attempted, failed = self._process_folder(trainerday_folder, "TrainerDay", pre_sync_activity_ids)
             uploaded_count += count
+            pending_count += attempted
+            failed_count += failed
             if last_file:
                 last_uploaded_file = last_file
         
@@ -2166,6 +2476,11 @@ You can select and copy text from this window!"""
                 foreground='green'
             )
             log_success(f"Sync completed: {uploaded_count} activities uploaded")
+            if failed_count > 0:
+                log_warning(f"Sync completed with {failed_count} failed upload(s) out of {pending_count} pending file(s)")
+        elif failed_count > 0:
+            self.update_status(f"Sync finished with {failed_count} failed upload(s)", "red")
+            log_warning(f"Sync completed with {failed_count} failed upload(s) out of {pending_count} pending file(s)")
         else:
             self.update_status("Sync complete - no new activities found", "blue")
             log_success("Sync completed: No new activities found")
@@ -2175,173 +2490,200 @@ You can select and copy text from this window!"""
     def _process_folder(self, folder, source_name, pre_sync_activity_ids=None):
         uploaded = 0
         last_uploaded_file = None
+        attempted = 0
+        failed = 0
+
+        # Decide which file extensions to process for this source
+        # Wahoo / MyWhoosh use .fit; TrainerDay exports .tcx via Dropbox
+        allowed_exts = self._get_allowed_extensions(source_name)
+
+        try:
+            pending_files = self._get_pending_source_files(folder, allowed_exts)
+        except Exception as e:
+            log_error(f"Error processing {source_name} folder: {str(e)}")
+            self.update_status(f"Error processing {source_name} folder: {str(e)}", "red")
+            return uploaded, last_uploaded_file, attempted, failed
+
+        if not pending_files:
+            return uploaded, last_uploaded_file, attempted, failed
+
         uploaded_folder = os.path.join(folder, "uploaded")
         modified_folder = os.path.join(uploaded_folder, "modified")
         os.makedirs(uploaded_folder, exist_ok=True)
 
-        # Decide which file extensions to process for this source
-        # Wahoo / MyWhoosh use .fit; TrainerDay exports .tcx via Dropbox
-        if source_name == "TrainerDay":
-            allowed_exts = (".fit", ".tcx")
-        else:
-            allowed_exts = (".fit",)
-
         # Add blank line before new job for better log grouping
         log_separator()
         logger.info(f"Processing {source_name} folder: {folder} (extensions: {', '.join(allowed_exts)})")
+        logger.info(f"Found {len(pending_files)} pending {source_name} file(s)")
 
         try:
-            for filename in os.listdir(folder):
-                # Skip the 'uploaded' subfolder
-                if filename == 'uploaded':
-                    continue
-
-                # Only process files with the allowed extensions
-                if not filename.lower().endswith(allowed_exts):
-                    continue
-
+            for filename in pending_files:
+                attempted += 1
                 file_path = os.path.join(folder, filename)
 
-                if os.path.isfile(file_path):
-                    self.update_status(f"Uploading {filename}...", "orange")
-                    log_info(f"Uploading file: {filename} from {source_name}")
+                self.update_status(f"Uploading {filename}...", "orange")
+                log_info(f"Uploading file: {filename} from {source_name}")
 
-                    try:
-                        self._maybe_log_upload_day_marker()
+                try:
+                    self._maybe_log_upload_day_marker()
 
-                        upload_file_path = file_path
-                        spoof_mode = None
-                        if source_name in ("Wahoo", "TrainerDay", "MyWhoosh") and hasattr(self, 'experimental_edge_spoof') and self.experimental_edge_spoof.get():
-                            upload_file_path, _, spoof_mode = self._build_modified_workout_copy(
-                                file_path, source_name, modified_folder
+                    upload_file_path = file_path
+                    spoof_mode = None
+                    if source_name in ("Wahoo", "TrainerDay", "MyWhoosh") and hasattr(self, 'experimental_edge_spoof') and self.experimental_edge_spoof.get():
+                        upload_file_path, _, spoof_mode = self._build_modified_workout_copy(
+                            file_path, source_name, modified_folder
+                        )
+
+                    self.garmin_client.upload_activity(upload_file_path)
+                    if spoof_mode:
+                        if spoof_mode == "fit_metadata_modified":
+                            detail = f"device-spoof: FIT metadata modified ({os.path.basename(upload_file_path)})"
+                        elif spoof_mode == "fit_to_tcx":
+                            detail = f"device-spoof: FIT->TCX conversion ({os.path.basename(upload_file_path)})"
+                        elif spoof_mode == "tcx_modified":
+                            detail = f"device-spoof: TCX metadata modified ({os.path.basename(upload_file_path)})"
+                        else:
+                            detail = f"device-spoof fallback: original file upload ({os.path.basename(upload_file_path)})"
+                        log_info(f"Uploaded via experimental path: {detail}")
+                        upload_logger.info(f"Upload path for {filename}: {detail}")
+
+                    # For TrainerDay uploads, try to set a friendly activity title
+                    if source_name == "TrainerDay":
+                        try:
+                            base_name, _ = os.path.splitext(filename)
+                            if " - " in base_name:
+                                activity_title = base_name.split(" - ", 1)[1].strip()
+                                if activity_title:
+                                    activity_id = None
+
+                                    # First try to find a new activity that appeared
+                                    # between the pre-sync and post-upload activity lists.
+                                    if pre_sync_activity_ids is not None:
+                                        try:
+                                            max_attempts = 6
+                                            delay_seconds = 2
+                                            for attempt in range(max_attempts):
+                                                post_activities = self.garmin_client.get_activities(0, 20)
+                                                new_activities = [
+                                                    a
+                                                    for a in post_activities
+                                                    if isinstance(a, dict)
+                                                    and "activityId" in a
+                                                    and a["activityId"] not in pre_sync_activity_ids
+                                                ]
+                                                
+                                                # Find the activity that matches this specific file
+                                                # by checking if it was uploaded in the last few seconds
+                                                matching_activity = None
+                                                for activity in new_activities:
+                                                    # The activity we just uploaded should be the most recent one
+                                                    # that's not in the pre-sync snapshot
+                                                    if matching_activity is None:
+                                                        matching_activity = activity
+                                                    elif activity.get("startTimeGMT", 0) > matching_activity.get("startTimeGMT", 0):
+                                                        matching_activity = activity
+                                                
+                                                if matching_activity:
+                                                    activity_id = matching_activity["activityId"]
+                                                    logger.info(f"Found TrainerDay activity via diff: {activity_id} (attempt {attempt + 1})")
+                                                    break
+                                                
+                                                # If we didn't find a new activity yet,
+                                                # wait a bit and let Garmin finish processing.
+                                                if attempt < max_attempts - 1:
+                                                    logger.info(f"Waiting for Garmin to process TrainerDay activity (attempt {attempt + 1}/{max_attempts})...")
+                                                    time.sleep(delay_seconds)
+                                        except Exception as diff_err:
+                                            log_warning(
+                                                f"Could not diff activities for TrainerDay title mapping: {diff_err}"
+                                            )
+
+                                    # If diffing failed or wasn't conclusive, fall back
+                                    # to Garmin's notion of the last activity.
+                                    if activity_id is None:
+                                        last_activity = (
+                                            self.garmin_client.get_last_activity()
+                                        )
+                                        if last_activity and "activityId" in last_activity:
+                                            activity_id = last_activity["activityId"]
+
+                                    if activity_id is not None:
+                                        self.garmin_client.set_activity_name(
+                                            activity_id, activity_title
+                                        )
+                                        log_info(
+                                            f"Set TrainerDay activity title to '{activity_title}' for {filename} (activityId={activity_id})"
+                                        )
+                        except Exception as title_err:
+                            log_warning(
+                                f"Could not set TrainerDay activity title for {filename}: {title_err}"
                             )
 
-                        self.garmin_client.upload_activity(upload_file_path)
-                        if spoof_mode:
-                            if spoof_mode == "fit_to_tcx":
-                                detail = f"device-spoof: FIT->TCX conversion ({os.path.basename(upload_file_path)})"
-                            elif spoof_mode == "tcx_modified":
-                                detail = f"device-spoof: TCX metadata modified ({os.path.basename(upload_file_path)})"
-                            else:
-                                detail = f"device-spoof fallback: original file upload ({os.path.basename(upload_file_path)})"
-                            log_info(f"Uploaded via experimental path: {detail}")
-                            upload_logger.info(f"Upload path for {filename}: {detail}")
+                    uploaded += 1
+                    last_uploaded_file = filename
+                    log_success(f"Successfully uploaded: {filename}")
+                    upload_logger.info(f"Uploaded: {filename}")
 
-                        # For TrainerDay uploads, try to set a friendly activity title
-                        if source_name == "TrainerDay":
-                            try:
-                                base_name, _ = os.path.splitext(filename)
-                                if " - " in base_name:
-                                    activity_title = base_name.split(" - ", 1)[1].strip()
-                                    if activity_title:
-                                        activity_id = None
+                    # Move to uploaded folder
+                    dest_path = os.path.join(uploaded_folder, filename)
+                    try:
+                        shutil.move(file_path, dest_path)
+                        log_info(f"Moved {filename} to uploaded folder")
+                    except PermissionError:
+                        shutil.copy2(file_path, dest_path)
+                        log_warning(f"File locked, copied instead of moved: {filename}")
 
-                                        # First try to find a new activity that appeared
-                                        # between the pre-sync and post-upload activity lists.
-                                        if pre_sync_activity_ids is not None:
-                                            try:
-                                                max_attempts = 6
-                                                delay_seconds = 2
-                                                for attempt in range(max_attempts):
-                                                    post_activities = self.garmin_client.get_activities(0, 20)
-                                                    new_activities = [
-                                                        a
-                                                        for a in post_activities
-                                                        if isinstance(a, dict)
-                                                        and "activityId" in a
-                                                        and a["activityId"] not in pre_sync_activity_ids
-                                                    ]
-                                                    
-                                                    # Find the activity that matches this specific file
-                                                    # by checking if it was uploaded in the last few seconds
-                                                    matching_activity = None
-                                                    for activity in new_activities:
-                                                        # The activity we just uploaded should be the most recent one
-                                                        # that's not in the pre-sync snapshot
-                                                        if matching_activity is None:
-                                                            matching_activity = activity
-                                                        elif activity.get("startTimeGMT", 0) > matching_activity.get("startTimeGMT", 0):
-                                                            matching_activity = activity
-                                                    
-                                                    if matching_activity:
-                                                        activity_id = matching_activity["activityId"]
-                                                        logger.info(f"Found TrainerDay activity via diff: {activity_id} (attempt {attempt + 1})")
-                                                        break
-                                                    
-                                                    # If we didn't find a new activity yet,
-                                                    # wait a bit and let Garmin finish processing.
-                                                    if attempt < max_attempts - 1:
-                                                        logger.info(f"Waiting for Garmin to process TrainerDay activity (attempt {attempt + 1}/{max_attempts})...")
-                                                        time.sleep(delay_seconds)
-                                            except Exception as diff_err:
-                                                log_warning(
-                                                    f"Could not diff activities for TrainerDay title mapping: {diff_err}"
-                                                )
+                    self.update_status(f"Uploaded {filename}", "green")
 
-                                        # If diffing failed or wasn't conclusive, fall back
-                                        # to Garmin's notion of the last activity.
-                                        if activity_id is None:
-                                            last_activity = (
-                                                self.garmin_client.get_last_activity()
-                                            )
-                                            if last_activity and "activityId" in last_activity:
-                                                activity_id = last_activity["activityId"]
-
-                                        if activity_id is not None:
-                                            self.garmin_client.set_activity_name(
-                                                activity_id, activity_title
-                                            )
-                                            log_info(
-                                                f"Set TrainerDay activity title to '{activity_title}' for {filename} (activityId={activity_id})"
-                                            )
-                            except Exception as title_err:
-                                log_warning(
-                                    f"Could not set TrainerDay activity title for {filename}: {title_err}"
-                                )
-
-                        uploaded += 1
-                        last_uploaded_file = filename
-                        log_success(f"Successfully uploaded: {filename}")
-                        upload_logger.info(f"Uploaded: {filename}")
-
-                        # Move to uploaded folder
+                except Exception as e:
+                    error_msg = str(e)
+                    if "409" in error_msg or "Conflict" in error_msg:
+                        log_info(f"File already uploaded (409 conflict): {filename}")
+                        # Already uploaded, move it
                         dest_path = os.path.join(uploaded_folder, filename)
                         try:
                             shutil.move(file_path, dest_path)
-                            log_info(f"Moved {filename} to uploaded folder")
                         except PermissionError:
                             shutil.copy2(file_path, dest_path)
-                            log_warning(f"File locked, copied instead of moved: {filename}")
-
-                        self.update_status(f"Uploaded {filename}", "green")
-
-                    except Exception as e:
-                        error_msg = str(e)
-                        if "409" in error_msg or "Conflict" in error_msg:
-                            log_info(f"File already uploaded (409 conflict): {filename}")
-                            # Already uploaded, move it
-                            dest_path = os.path.join(uploaded_folder, filename)
-                            try:
-                                shutil.move(file_path, dest_path)
-                            except PermissionError:
-                                shutil.copy2(file_path, dest_path)
-                        else:
-                            log_error(f"Failed to upload {filename}: {error_msg}")
-                            self.update_status(f"Failed to upload {filename}: {error_msg}", "red")
+                    else:
+                        failed += 1
+                        log_error(f"Failed to upload {filename}: {error_msg}")
+                        self.update_status(f"Failed to upload {filename}: {error_msg}", "red")
         
         except Exception as e:
+            failed += 1
             log_error(f"Error processing {source_name} folder: {str(e)}")
             self.update_status(f"Error processing {source_name} folder: {str(e)}", "red")
         
         # Log completion with success icon
         if uploaded > 0:
             log_success(f"Completed {source_name} processing. Uploaded: {uploaded} files")
-        else:
-            log_success(f"Completed {source_name} processing. No new files to upload")
+        elif failed > 0:
+            log_warning(f"Completed {source_name} processing with {failed} failed upload(s)")
         
         # Add blank line after job completion for better grouping
         log_separator()
-        return uploaded, last_uploaded_file
+        return uploaded, last_uploaded_file, attempted, failed
+
+    def _attempt_startup_auto_sync(self):
+        if self.is_monitoring:
+            return
+        if not self.config.get('start_with_windows'):
+            return
+
+        logger.info("Startup auto-sync delay elapsed - retrying saved-session login")
+
+        if not (self.is_logged_in and self.garmin_client):
+            if not self.try_session_login():
+                logger.warning("Startup auto-sync could not resume saved Garmin session after delay")
+                self.update_status("Startup auto-sync needs Garmin login", "orange")
+                return
+
+        logger.info("Startup auto-sync ready - starting monitoring")
+        self.start_monitoring()
+        if self.is_monitoring:
+            self.root.withdraw()
+            self.create_tray_icon()
     
     def toggle_monitoring(self):
         if self.is_monitoring:
@@ -2953,22 +3295,12 @@ def main():
         try:
             # Load config to check if auto-sync should start
             if app.config.get('start_with_windows') and os.path.exists(CONFIG_FILE):
-                # Check if we have a valid session (logged in)
+                logger.info("Auto-start enabled - scheduling delayed startup sync")
+                root.after(5000, app._attempt_startup_auto_sync)
                 if app.is_logged_in and app.garmin_client:
-                    logger.info("Auto-start with valid session - starting monitoring and minimizing to tray")
-                    root.after(500, lambda: app.start_monitoring() if not app.is_monitoring else None)
-                    root.after(800, lambda: root.withdraw())
-                    root.after(1000, lambda: app.create_tray_icon())
+                    logger.info("Saved Garmin session already available at startup")
                 else:
-                    # No valid session - keep window open and prompt user to login
-                    logger.info("Auto-start without valid session - keeping window open for user login")
-                    app.update_status("Please click 'Test & Login' to authenticate with Garmin", "orange")
-                    messagebox.showinfo(
-                        "Garmin Login Required",
-                        "Welcome back!\n\n"
-                        "Please click the 'Test & Login' button to authenticate with Garmin Connect.\n\n"
-                        "After logging in, the app will auto-start silently on future reboots."
-                    )
+                    logger.info("Startup session not ready yet - will retry after delay")
         except Exception as e:
             logger.error(f"Error during startup auto-start: {str(e)}")
     
